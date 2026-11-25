@@ -29,7 +29,7 @@ window.__hw = {
       .map(a => ({ text: (a.innerText || a.alt || '').trim(), href: new URL(a.getAttribute('href') || a.getAttribute('src'), location.href).href }));
     let attempts = [];
     if (col) { try { attempts = await this.all('/learn/api/public/v2/courses/' + course + '/gradebook/columns/' + col + '/attempts'); } catch (e) {} }
-    for (const a of attempts) { try { a.files = (await this.j('/learn/api/public/v2/courses/' + course + '/gradebook/columns/' + col + '/attempts/' + a.id + '/files')).results.map(f => f.name); } catch (e) {} }
+    for (const a of attempts) { if (a.attemptReceipt) { a.receipt = a.attemptReceipt.receiptId; a.size = a.attemptReceipt.submissionTotalSize; } }  // 学生调不了 attempts/{id}/files，文件名看提交后截图
     return { title: c.title, body: c.body || '', handler: c.contentHandler && c.contentHandler.id, avail: c.availability,
       attachments: att.map(a => ({ name: a.fileName, url: '/learn/api/public/v1/courses/' + course + '/contents/' + content + '/attachments/' + a.id + '/download' })),
       links, attempts };

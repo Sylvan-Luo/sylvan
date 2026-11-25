@@ -18,7 +18,6 @@ HERE = Path(__file__).resolve().parent
 DATA = Path(os.path.expanduser('~/data/tools/pku-homework'))
 CACHE = DATA / 'cache.json'
 HOST = os.environ.get('HW_HOST', 'mac')
-WIN_HW = r'C:\Users\<WinUser>\AppData\Local\ClaudeHw'  # %LOCALAPPDATA%\ClaudeHw，只用于 tsx push/pull
 MARK = '@@HW@@'
 
 
@@ -120,7 +119,7 @@ def show_text(x, d):
     if d['links']: L += ['', '正文里的链接：'] + [f"- {l['text']} {l['href']}" for l in d['links']]
     L += ['', '提交记录：' + ('无' if not d['attempts'] else '')]
     for t in d['attempts']:
-        L.append(f"- {t['id']} {t['status']} {fmt_due(t.get('created'))} 文件:{','.join(t.get('files') or []) or '-'} 分数:{t.get('score', '-')}")
+        L.append(f"- {t['id']} {t['status']} {fmt_due(t.get('created'))} 回执:{t.get('receipt', '-')} 大小:{t.get('size', '-')} B 分数:{t.get('score', '-')}")
     return '\n'.join(L)
 
 
@@ -179,7 +178,7 @@ def cmd_status(a):
     print(f"{x['courseName']}｜{x['name']}  截止 {fmt_due(x['due'])}")
     if not d['attempts']: print('还没有提交')
     for t in d['attempts']:
-        print(f"- {t['status']}  {fmt_due(t.get('created'))}  文件:{','.join(t.get('files') or []) or '-'}  分数:{t.get('score', '-')}")
+        print(f"- {t['status']}  {fmt_due(t.get('created'))}  回执:{t.get('receipt', '-')}  大小:{t.get('size', '-')} B  分数:{t.get('score', '-')}")
 
 
 def shot(name):
@@ -209,7 +208,7 @@ def cmd_submit(a):
         if len(f.name) > 120: sys.exit(f'hw: 文件名太长 {f.name}')
     if not files and not text: sys.exit('hw: 没有要提交的文件或文字')
     # 1) 文件传到笔记本
-    up = WIN_HW + '\\up\\' + time.strftime('%Y%m%d%H%M%S')
+    up = ps(f"Write-Output ('{MARK}'+$HwDir)")[0] + '\\up\\' + time.strftime('%Y%m%d%H%M%S')  # 笔记本上的 %LOCALAPPDATA%\\ClaudeHw
     if files:
         ps(f"New-Item -ItemType Directory -Force {psq(up)}|Out-Null")
         for f in files:
@@ -235,7 +234,7 @@ Write-Output ('{MARK}'+(HwEv ({call_js})))""", 1800)
     which = '提交' if mode == 'confirm' else '保存草稿'
     r = ps(f"Write-Output ('{MARK}'+(HwEv {psq('__hw.click(' + jsq(which) + ')')}))\nStart-Sleep 6\n"
            f"foreach($i in 1..60){{ try{{ if((Ev 'document.readyState') -eq 'complete'){{break}} }}catch{{}}; Start-Sleep 1 }}\n"
-           f"Write-Output ('{MARK}'+(Ev 'location.href+\"\\n\"+document.body.innerText.slice(0,600)'))", 1800)
+           f"Write-Output ('{MARK}'+(Ev 'location.href+\"  \"+((document.body.innerText.match(/成功！[\\s\\S]{{0,90}}/)||[\"(页面上没看到“成功”字样，请看截图)\"])[0].replace(/\\s+/g,\" \"))'))", 1800)
     print('\n'.join(r))
     print('截图（点击后）：', shot('after.png'))
     time.sleep(2)
