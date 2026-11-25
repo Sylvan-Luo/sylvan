@@ -186,7 +186,13 @@ def shot(name):
            f"[IO.File]::WriteAllBytes($p,[Convert]::FromBase64String($r.result.data)); Write-Output ('{MARK}'+$p)")
     out = DATA / 'shots'; out.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix='hwshot'))
-    subprocess.run(['tsx', 'pull', HOST, r[0], '-d', str(tmp)], check=True, capture_output=True)
+    for i in range(3):  # tsx pull 偶尔会失败一次；截图失败不能让提交后的核对中断
+        if subprocess.run(['tsx', 'pull', HOST, r[0], '-d', str(tmp)], capture_output=True).returncode == 0 and any(tmp.iterdir()):
+            break
+        time.sleep(3)
+    else:
+        shutil.rmtree(tmp, ignore_errors=True)
+        return f'（截图没取回来，笔记本上在 {r[0]}）'
     f = out / f"{time.strftime('%m%d_%H%M%S')}_{name}"
     shutil.move(str(next(tmp.iterdir())), f); shutil.rmtree(tmp, ignore_errors=True)
     return f
