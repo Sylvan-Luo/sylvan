@@ -1,0 +1,98 @@
+% latex-pdf 的 pandoc 模板（XeLaTeX）。变量见 ~/tools/latex-pdf/README.md
+$if(book)$
+\documentclass[fontset=none, zihao=$if(zihao)$$zihao$$else$5$endif$, openany, oneside, a4paper]{ctexbook}
+$else$
+\documentclass[fontset=none, zihao=$if(zihao)$$zihao$$else$5$endif$, a4paper]{ctexart}
+$endif$
+\PassOptionsToPackage{unicode}{hyperref}
+\PassOptionsToPackage{hyphens}{url}
+\usepackage{latex-pdf-theme}
+$if(theme)$
+\lpsetpalette{$theme$}
+$endif$
+$if(book)$
+\ctexset{chapter/name={第,$if(chapter-name)$$chapter-name$$else$章$endif$}}
+$endif$
+$if(cover-art-off)$
+\lpcoverartfalse
+$endif$
+\setcounter{secnumdepth}{$if(secnumdepth)$$secnumdepth$$else$$if(book)$1$else$2$endif$$endif$}
+\setcounter{tocdepth}{$if(toc-depth)$$toc-depth$$else$1$endif$}
+$if(highlighting-macros)$
+$highlighting-macros$
+$endif$
+$if(strikeout)$
+\usepackage{soul}
+\renewcommand{\st}[1]{\sout{#1}}
+$endif$
+$for(header-includes)$
+$header-includes$
+$endfor$
+\usepackage{hyperref}
+\usepackage{bookmark}
+\IfFileExists{xurl.sty}{\usepackage{xurl}}{}
+\urlstyle{same}
+\hypersetup{colorlinks=true, linkcolor=black, citecolor=black, urlcolor=lpdef,
+  pdftitle={$if(title-meta)$$title-meta$$endif$},
+  pdfauthor={$if(author-meta)$$author-meta$$endif$},
+  pdfcreator={latex-pdf (pandoc + XeLaTeX)}}
+\lpsetheadertitle{$if(header-title)$$header-title$$else$$title$$endif$}
+
+\begin{document}
+$if(book)$
+\frontmatter
+$if(title)$
+\lpcoverbook{$eyebrow$}{$title$}{$subtitle$}
+$if(info-latex)$
+\begin{lpinfo}
+$info-latex$
+\end{lpinfo}
+$endif$
+$if(cover-extra)$
+$cover-extra$
+$endif$
+$if(author)$
+\vfill
+{\centering\sffamily\color{lpgray}$for(author)$$author$$sep$ · $endfor$$if(date)$\quad$date$$endif$\par}
+$endif$
+\clearpage
+$endif$
+$for(include-before)$
+$include-before$
+$endfor$
+$if(toc)$
+\tableofcontents
+\clearpage
+$endif$
+\mainmatter
+$else$
+$if(title)$
+\lpcoverarticle{$eyebrow$}{$title$}{$subtitle$}
+$if(author)$
+\noindent{\sffamily\small\color{lpgray}$for(author)$$author$$sep$ · $endfor$$if(date)$\quad$date$$endif$\par}\vspace{4pt}
+$endif$
+$if(info-latex)$
+\begin{lpinfo}
+$info-latex$
+\end{lpinfo}
+$endif$
+$if(cover-extra)$
+$cover-extra$
+$endif$
+$endif$
+$for(include-before)$
+$include-before$
+$endfor$
+$if(toc)$
+{\noindent\sffamily\bfseries\color{primary}\Large 目录\par}\vspace{6pt}
+{\makeatletter\@starttoc{toc}\makeatother}
+\vspace{10pt}
+$endif$
+$endif$
+
+$body$
+
+$for(include-after)$
+$include-after$
+$endfor$
+\end{document}

@@ -1,0 +1,5 @@
+#!/bin/zsh
+# 在 gpu 台式机上执行 PowerShell 脚本（参数或标准输入），避开 cmd 引号问题
+if [ $# -gt 0 ]; then s="$*"; else s=$(cat); fi
+enc=$(printf '%s' "\$ProgressPreference='SilentlyContinue'; [Console]::OutputEncoding=[Text.Encoding]::UTF8; $s" | iconv -f UTF-8 -t UTF-16LE | base64 | tr -d '\n')
+exec ssh gpu "powershell -NoProfile -NonInteractive -EncodedCommand $enc"

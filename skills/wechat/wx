@@ -1,0 +1,370 @@
+#!/usr/bin/python3
+# -*- coding: utf-8 -*-
+"""wx — 微信私聊提醒 + 给好友发消息（经 tsx 操作用户 Windows 笔记本上的微信 4.x）
+
+  wx status              监看状态、当前未读的私聊
+  wx inbox [N]           最近 N 条（默认 20）私聊新消息提醒
+  wx send 名字 内容       给私聊好友发一条消息（群聊一律拒绝）。⚠ 先给用户看收件人和原文，用户确认了才执行
+  wx send 名字 内容 --dry 只在输入框里试填、截图、再清空，不发送
+  wx read 名字            打开这个私聊，读出屏幕上最近的消息（会把它标成已读）
+  wx scan                 立刻读一次会话列表（调试用，打印每行识别结果）
+  wx autoreopen on|off   微信被关到托盘/最小化时，是否在键鼠空闲时自动打开并放到最底层（默认 on）
+  wx hide | show         托盘模式：把微信挪到屏幕外（照常提醒）/ 挪回来显示
+  wx selftest            塞一条假的测试提醒，检查会话台网页的提示
+  wx start | stop         启动 / 停止笔记本上的常驻识别（start 也会顺带更新笔记本上的脚本）
+  wx watch                mini 上的常驻轮询（LaunchAgent com.user.wechat-watch 跑的就是它）
+  wx install | uninstall  安装 / 卸载 mini 上的 LaunchAgent
+  wx groups|private|ignore 加/删 名字    手动纠正分类（存在笔记本的 config.json）
+"""
+import sys, os, json, time, base64, subprocess, shutil
+
+os.environ.setdefault('WX_TZ', 'Asia/Shanghai')   # 用户在国内：命令行里的时间按北京时间显示
+os.environ['TZ'] = os.environ['WX_TZ']
+time.tzset()
+
+HOME = os.path.expanduser('~')
+TOOL = os.path.dirname(os.path.realpath(__file__))
+DATA = os.path.join(HOME, '.local', 'state', 'wechat')   # 小文件；launchd 启动的进程读不了外置盘 ~/data
+EVENTS = os.path.join(DATA, 'events.jsonl')
+STATE = os.path.join(DATA, 'watch-state.json')
+WEBFEED = os.path.join(HOME, 'claude-ui', 'static', 'wechat-feed.json')
+HOST = os.environ.get('WX_HOST', 'mac')
+WDIR = r'C:\Users\<WinUser>\AppData\Local\ClaudeWx'
+PY = r'C:\Users\<WinUser>\AppData\Local\Programs\Python\Python310\python.exe'
+PYW = r'C:\Users\<WinUser>\AppData\Local\Programs\Python\Python310\pythonw.exe'
+LABEL = 'com.user.wechat-watch'
+PLIST = os.path.join(HOME, 'Library', 'LaunchAgents', LABEL + '.plist')
+
+
+def tsx_bin():
+    for p in (os.path.join(HOME, 'claude-ui', 'shim', 'tsx'), shutil.which('tsx') or '', os.path.join(HOME, '.local', 'bin', 'tsx')):
+        if p and os.path.exists(p):
+            return p
+    return 'tsx'
+
+
+def tsx(*args, timeout=120):
+    r = subprocess.run([tsx_bin()] + list(args), capture_output=True, text=True, timeout=timeout)
+    return r.returncode, r.stdout, r.stderr
+
+
+def wsh(ps, timeout=120):
+    """在笔记本上执行 PowerShell，起始目录为工具目录。返回 (rc, stdout, stderr)。"""
+    return tsx('sh', HOST, '--timeout', str(timeout), '--cwd', WDIR, ps, timeout=timeout + 30)
+
+
+def b64(s):
+    return base64.b64encode(s.encode('utf-8')).decode()
+
+
+def ensure_code():
+    """本地 win/ 下的脚本有改动就推到笔记本（按内容哈希）。"""
+    import hashlib
+    hsh = hashlib.sha1(b''.join(open(os.path.join(TOOL, 'win', f), 'rb').read() for f in ('wxagent.py', 'wxlib.py'))).hexdigest()
+    mark = os.path.join(DATA, 'pushed.sha')
+    try:
+        if open(mark).read().strip() == hsh:
+            return False
+    except Exception:
+        pass
+    push_code()
+    os.makedirs(DATA, exist_ok=True)
+    open(mark, 'w').write(hsh)
+    return True
+
+
+def agent(*args, timeout=120):
+    ensure_code()
+    ps = "$OutputEncoding=[Console]::OutputEncoding=[Text.Encoding]::UTF8; & '%s' -X utf8 wxagent.py %s" % (PY, ' '.join(args))
+    rc, out, err = wsh(ps, timeout)
+    line = [l for l in out.strip().splitlines() if l.strip().startswith('{')]
+    if not line:
+        raise SystemExit('笔记本上执行失败：' + (err or out).strip()[-800:])
+    return json.loads(line[-1])
+
+
+def push_code():
+    rc, out, err = tsx('sh', HOST, "New-Item -ItemType Directory -Force '%s' | Out-Null" % WDIR)
+    rc, out, err = tsx('push', HOST, '-f', os.path.join(TOOL, 'win', 'wxagent.py'), os.path.join(TOOL, 'win', 'wxlib.py'), '-d', WDIR)
+    if rc != 0:
+        raise SystemExit('推送脚本失败：' + err + out)
+
+
+def feed_remote():
+    rc, out, err = tsx('sh', HOST, '--cmd', 'type "%s\\feed.json"' % WDIR, timeout=40)
+    if rc != 0:
+        return None
+    try:
+        return json.loads(out.strip().splitlines()[-1])
+    except Exception:
+        return None
+
+
+def start(force_push=True):
+    if force_push:
+        ensure_code()
+    f = feed_remote()
+    if f and f.get('pid'):
+        stop(quiet=True, show=False)
+    ps = ("Start-Process -FilePath '%s' -ArgumentList '-X','utf8','wxagent.py','loop','4' -WorkingDirectory '%s' "
+          "-WindowStyle Hidden -PassThru | Select-Object -ExpandProperty Id") % (PYW, WDIR)
+    rc, out, err = wsh(ps)
+    print('笔记本上的识别进程已启动，pid', out.strip(), err.strip())
+
+
+def stop(quiet=False, show=True):
+    # 托盘模式下窗口在屏幕外：真正停掉之前先挪回来，免得没人管时用户点托盘看不到微信（重启时不用）
+    try:
+        if show:
+            wsh("if(Test-Path hidden.json){ & '%s' -X utf8 wxagent.py show }" % PY, 60)
+    except Exception:
+        pass
+    f = feed_remote()
+    pid = (f or {}).get('pid')
+    if not pid:
+        if not quiet:
+            print('笔记本上没有在跑的识别进程（feed.json 里没有 pid）')
+        return
+    # 只停自己启动的那个：核对命令行里有 wxagent.py loop
+    ps = ("$p=Get-CimInstance Win32_Process -Filter 'ProcessId=%d'; if($p -and $p.CommandLine -like '*wxagent.py*loop*')"
+          "{Stop-Process -Id %d; 'stopped'} else {'not-running'}") % (int(pid), int(pid))
+    rc, out, err = wsh(ps)
+    if not quiet:
+        print(out.strip() or err.strip())
+
+
+def load_state():
+    try:
+        return json.load(open(STATE))
+    except Exception:
+        return {'seq': 0, 'remote_seq': 0, 'remote_pid': None}
+
+
+def write_web(state, f, events):
+    web = {'updated': time.time(), 'seq': state['seq'], 'laptop_hb': (f or {}).get('hb', state.get('laptop_hb', 0)),
+           'status': (f or {}).get('status', 'offline' if f is None else 'unknown'),
+           'msg': (f or {}).get('msg', '笔记本没连上' if f is None else ''),
+           'unread': (f or {}).get('unread', []), 'events': events[-100:]}
+    tmp = WEBFEED + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as fp:
+        json.dump(web, fp, ensure_ascii=False)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, WEBFEED)
+
+
+def read_events():
+    ev = []
+    try:
+        with open(EVENTS, encoding='utf-8') as fp:
+            for l in fp:
+                try:
+                    ev.append(json.loads(l))
+                except Exception:
+                    pass
+    except FileNotFoundError:
+        pass
+    return ev
+
+
+def watch(interval=8):
+    os.makedirs(DATA, exist_ok=True)
+    st = load_state()
+    events = read_events()[-300:]
+    last_start_try = 0
+    while True:
+        try:
+            f = feed_remote()
+        except Exception:
+            f = None
+        now = time.time()
+        if f is not None:
+            st['laptop_hb'] = f.get('hb', 0)
+            # 笔记本上的 feed.json 会跨进程重启保留（seq 接着涨）；只有 seq 变小（文件被删/重置）才从头接
+            st['remote_pid'] = f.get('pid')
+            if f.get('seq', 0) < st.get('remote_seq', 0):
+                st['remote_seq'] = 0
+            seen = {(x.get('name'), x.get('ts')) for x in events}
+            new = [e for e in f.get('events', []) if e.get('seq', 0) > st['remote_seq']]
+            for e in new:
+                st['remote_seq'] = max(st['remote_seq'], e['seq'])
+                if (e.get('name'), e.get('ts')) in seen:
+                    continue   # 同一条（同名同时间戳）已经收过
+                if e.get('startup') and any(x.get('name') == e['name'] and x.get('preview') == e.get('preview') for x in events[-50:]):
+                    continue   # 重启后补报的旧未读，已经提醒过
+                seen.add((e.get('name'), e.get('ts')))
+                st['seq'] += 1
+                ev = dict(e); ev['rseq'] = e['seq']; ev['seq'] = st['seq']
+                events.append(ev)
+                with open(EVENTS, 'a', encoding='utf-8') as fp:
+                    fp.write(json.dumps(ev, ensure_ascii=False) + '\n')
+            stale = now - f.get('hb', 0) > 60
+        else:
+            stale = True
+        # 笔记本连得上但识别进程没在跑（开机后、被关掉） → 拉起来（最多 5 分钟试一次）
+        if f is not None or stale:
+            if stale and now - last_start_try > 300:
+                last_start_try = now
+                try:
+                    rc, out, err = tsx('sh', HOST, 'echo ok', timeout=30)
+                    if rc == 0 and 'ok' in out:
+                        start(force_push=True)
+                except Exception:
+                    pass
+        # wx selftest 塞进来的测试提醒
+        inj = os.path.join(DATA, 'inject.jsonl')
+        if os.path.exists(inj):
+            try:
+                with open(inj, encoding='utf-8') as fp:
+                    lines = fp.read().splitlines()
+                os.remove(inj)
+                for l in lines:
+                    e = json.loads(l)
+                    st['seq'] += 1
+                    e['seq'] = st['seq']
+                    events.append(e)
+                    with open(EVENTS, 'a', encoding='utf-8') as fp:
+                        fp.write(json.dumps(e, ensure_ascii=False) + '\n')
+            except Exception:
+                pass
+        events = events[-300:]
+        json.dump(st, open(STATE, 'w'))
+        try:
+            write_web(st, f, events)
+        except Exception:
+            pass
+        time.sleep(interval)
+
+
+def install():
+    os.makedirs(DATA, exist_ok=True)
+    path = '%s/claude-ui/shim:%s/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin' % (HOME, HOME)
+    plist = f'''<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>{LABEL}</string>
+  <key>ProgramArguments</key><array><string>/usr/bin/python3</string><string>{os.path.realpath(__file__)}</string><string>watch</string></array>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>{path}</string></dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>StandardOutPath</key><string>{DATA}/watch.log</string>
+  <key>StandardErrorPath</key><string>{DATA}/watch.log</string>
+</dict></plist>
+'''
+    with open(PLIST, 'w') as fp:
+        fp.write(plist)
+    uid = os.getuid()
+    subprocess.run(['launchctl', 'bootout', 'gui/%d/%s' % (uid, LABEL)], capture_output=True)
+    r = subprocess.run(['launchctl', 'bootstrap', 'gui/%d' % uid, PLIST], capture_output=True, text=True)
+    print('已安装 LaunchAgent', LABEL, r.stderr.strip())
+
+
+def uninstall():
+    subprocess.run(['launchctl', 'bootout', 'gui/%d/%s' % (os.getuid(), LABEL)], capture_output=True)
+    if os.path.exists(PLIST):
+        os.remove(PLIST)
+    stop(quiet=True)
+    print('已卸载 LaunchAgent，并停了笔记本上的识别进程')
+
+
+def ago(ts):
+    d = time.time() - ts
+    return '%d 秒前' % d if d < 60 else ('%d 分钟前' % (d // 60) if d < 3600 else time.strftime('%m-%d %H:%M', time.localtime(ts)))
+
+
+def status():
+    try:
+        w = json.load(open(WEBFEED))
+    except Exception:
+        w = None
+    if w:
+        print('mini 轮询：', '运行中' if time.time() - w['updated'] < 60 else '没在运行（%s 更新）' % ago(w['updated']))
+        print('笔记本：', w.get('status'), w.get('msg') or '', '· 心跳', ago(w['laptop_hb']) if w.get('laptop_hb') else '无')
+        u = w.get('unread') or []
+        print('当前未读私聊：', '无' if not u else '')
+        for x in u:
+            print('  · %s：%s%s' % (x['name'], x.get('preview', ''), '（%s 条）' % x['count'] if x.get('count') else ''))
+    else:
+        print('还没有 mini 轮询的数据（wx install 安装常驻轮询）')
+
+
+def inbox(n=20):
+    ev = read_events()[-n:]
+    if not ev:
+        print('还没有私聊提醒'); return
+    for e in ev:
+        print('%s  %s%s：%s' % (time.strftime('%m-%d %H:%M', time.localtime(e['ts'])), e['name'],
+                               '（可能是群）' if e.get('maybe_group') else '', e.get('preview', '')))
+
+
+def conf_edit(kind, op, name):
+    ps = ("$f='config.json'; $c=if(Test-Path $f){Get-Content $f -Raw -Encoding UTF8|ConvertFrom-Json}else{[pscustomobject]@{}}; "
+          "foreach($k in 'groups','private','ignore'){ if(-not $c.PSObject.Properties[$k]){ $c|Add-Member $k @() } }; "
+          "$n=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('%s')); "
+          "$l=@($c.%s | ? { $_ -ne $n }); if('%s' -eq 'add'){ $l+=$n }; $c.%s=$l; "
+          "[IO.File]::WriteAllText((Join-Path (Get-Location) $f), ($c|ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding $false)); $c.%s -join ', '"
+          ) % (b64(name), kind, op, kind, kind)
+    rc, out, err = wsh(ps)
+    print(kind, '=>', out.strip(), err.strip())
+
+
+def main():
+    a = sys.argv[1:]
+    if not a or a[0] in ('-h', '--help', 'help'):
+        print(__doc__); return
+    c = a[0]
+    if c == 'status':
+        status()
+    elif c == 'inbox':
+        inbox(int(a[1]) if len(a) > 1 else 20)
+    elif c == 'send':
+        if len(a) < 3:
+            raise SystemExit('用法：wx send 名字 内容 [--dry]')
+        args = [x for x in a[1:] if x != '--dry']
+        r = agent('send', b64(args[0]), b64(' '.join(args[1:]) if len(args) > 2 else args[1]), *(['--dry'] if '--dry' in a else []), timeout=90)
+        print(json.dumps(r, ensure_ascii=False, indent=1))
+    elif c == 'read':
+        r = agent('read', b64(a[1]), timeout=90)
+        if not r.get('ok'):
+            print(r.get('msg')); return
+        print('【%s】' % r['chat'])
+        for m in r['messages']:
+            print({'me': '  我：', 'them': '对方：', 'time': '  —— '}.get(m['who'], ''), m['text'])
+    elif c == 'scan':
+        r = agent('scan', timeout=90)
+        print({k: v for k, v in r.items() if k != 'rows'})
+        for x in r.get('rows', []):
+            print('%-7s %s | %s | %s | %s%s%s%s' % (x.get('kind'), x['name'], x['time'], x['preview'], x['unread'] or '',
+                  ' 免打扰' if x['muted'] else '', ' 拼图头像' if x['mosaic'] else '', ' 当前' if x['selected'] else ''))
+    elif c == 'autoreopen' and len(a) > 1 and a[1] in ('on', 'off'):
+        ps = ("$f='config.json'; $c=if(Test-Path $f){Get-Content $f -Raw -Encoding UTF8|ConvertFrom-Json}else{[pscustomobject]@{}}; "
+              "$c|Add-Member auto_reopen $%s -Force; "
+              "[IO.File]::WriteAllText((Join-Path (Get-Location) $f), ($c|ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding $false)); 'auto_reopen=' + $c.auto_reopen") % ('true' if a[1] == 'on' else 'false')
+        rc, out, err = wsh(ps)
+        print(out.strip(), err.strip())
+    elif c in ('show', 'hide'):
+        print(json.dumps(agent(c, timeout=60), ensure_ascii=False))
+    elif c == 'selftest':
+        e = {'ts': time.time(), 'name': '测试', 'preview': '这是一条测试提醒（wx selftest），不是真的微信消息', 'count': 1, 'test': True}
+        os.makedirs(DATA, exist_ok=True)
+        with open(os.path.join(DATA, 'inject.jsonl'), 'a', encoding='utf-8') as fp:
+            fp.write(json.dumps(e, ensure_ascii=False) + '\n')
+        print('已塞入一条测试提醒，约 10 秒内会话台网页右上角会弹出')
+    elif c == 'start':
+        start()
+    elif c == 'stop':
+        stop()
+    elif c == 'watch':
+        watch()
+    elif c == 'install':
+        install()
+    elif c == 'uninstall':
+        uninstall()
+    elif c in ('groups', 'private', 'ignore') and len(a) >= 3 and a[1] in ('add', 'del'):
+        conf_edit(c, a[1], ' '.join(a[2:]))
+    else:
+        print(__doc__)
+
+
+if __name__ == '__main__':
+    main()

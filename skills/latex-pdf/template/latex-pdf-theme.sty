@@ -1,0 +1,372 @@
+% latex-pdf-theme.sty —— latex-pdf 工具的版式（XeLaTeX + ctex）
+% 风格参照用户给的《图像处理 期中总复习笔记》：深蓝封面横幅、蓝色章节标题、
+% 宋体正文、冬青黑体/Avenir 标题、各色 tcolorbox 定义/结论/原话/易错框。
+% 由 pandoc 模板 latex-pdf.tex 载入；手写 LaTeX 也可以直接 \usepackage{latex-pdf-theme}。
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{latex-pdf-theme}[2026/11/25 latex-pdf theme]
+
+\RequirePackage{iftex}
+\RequirePackage{xcolor}
+\RequirePackage{amsmath,amssymb}
+\RequirePackage{unicode-math}
+\RequirePackage{graphicx}
+\RequirePackage{geometry}
+\RequirePackage{fancyhdr}
+\RequirePackage{enumitem}
+\RequirePackage{booktabs,longtable,array,calc,multirow,tabularx}
+\RequirePackage{caption}
+\RequirePackage[most]{tcolorbox}
+\RequirePackage{tikz}
+\RequirePackage{etoolbox}
+\RequirePackage{needspace}
+\RequirePackage{xeCJKfntef}
+\RequirePackage{upquote}
+
+% ---------------------------------------------------------------- 字体
+% 优先用 macOS 自带字体；没有时退回 TeX 自带的 Fandol / TeX Gyre，保证能编译。
+\defaultfontfeatures{Ligatures=TeX}
+\setmainfont{texgyretermes}[Extension=.otf,
+  UprightFont=*-regular, BoldFont=*-bold,
+  ItalicFont=*-italic, BoldItalicFont=*-bolditalic]
+\IfFontExistsTF{Avenir Next}{%
+  \setsansfont{Avenir Next}[UprightFont={Avenir Next Regular},
+    BoldFont={Avenir Next Demi Bold}, ItalicFont={Avenir Next Italic},
+    BoldItalicFont={Avenir Next Demi Bold Italic}, Scale=0.95]
+}{%
+  \setsansfont{texgyreheros}[Extension=.otf, UprightFont=*-regular,
+    BoldFont=*-bold, ItalicFont=*-italic, BoldItalicFont=*-bolditalic]
+}
+\IfFontExistsTF{Menlo}{\setmonofont{Menlo}[Scale=0.85]}{%
+  \setmonofont{lmmono10-regular}[Extension=.otf]}
+\IfFontExistsTF{STIX Two Math}{\setmathfont{STIX Two Math}}{%
+  \setmathfont{latinmodern-math.otf}}
+
+\IfFontExistsTF{Songti SC}{%
+  \setCJKmainfont{Songti SC}[BoldFont={Songti SC Bold}, ItalicFont={Songti SC}]
+}{%
+  \setCJKmainfont{FandolSong-Regular}[Extension=.otf, BoldFont=FandolSong-Bold]
+}
+\IfFontExistsTF{Hiragino Sans GB}{%
+  \setCJKsansfont{Hiragino Sans GB W3}[BoldFont={Hiragino Sans GB W6}]
+  \setCJKmonofont{Hiragino Sans GB W3}
+}{%
+  \setCJKsansfont{FandolHei-Regular}[Extension=.otf, BoldFont=FandolHei-Bold]
+  \setCJKmonofont{FandolHei-Regular}[Extension=.otf]
+}
+% 楷体：霞鹜文楷（~/Library/Fonts，开源）> Fandol 楷。
+% 注意：不要探测 STKaiti/Kaiti SC——macOS 上它们是“按需下载”字体，查找时会卡死。
+\IfFontExistsTF{LXGW WenKai}{\setCJKfamilyfont{kai}{LXGW WenKai}[BoldFont={LXGW WenKai Medium}]}{%
+  \setCJKfamilyfont{kai}{FandolKai-Regular}[Extension=.otf]}
+\providecommand{\kaishu}{\CJKfamily{kai}}
+\renewcommand{\kaishu}{\CJKfamily{kai}}
+
+% ---------------------------------------------------------------- 颜色
+\definecolor{lpnavy}{HTML}{1F3F7A}
+\colorlet{primary}{lpnavy}
+\newcommand{\lpsetpalette}[1]{%
+  \ifstrequal{#1}{navy}{\definecolor{primary}{HTML}{1F3F7A}}{}%
+  \ifstrequal{#1}{teal}{\definecolor{primary}{HTML}{0E5E5A}}{}%
+  \ifstrequal{#1}{wine}{\definecolor{primary}{HTML}{7A1F3D}}{}%
+  \ifstrequal{#1}{forest}{\definecolor{primary}{HTML}{2D5A27}}{}%
+  \ifstrequal{#1}{ink}{\definecolor{primary}{HTML}{2B2F36}}{}%
+  \ifstrequal{#1}{purple}{\definecolor{primary}{HTML}{4B2C7F}}{}%
+  \ifstrequal{#1}{orange}{\definecolor{primary}{HTML}{A4471A}}{}%
+}
+\definecolor{lpdef}{HTML}{2160AC}     % 定义（蓝）
+\definecolor{lpthm}{HTML}{0E7A62}     % 结论（青绿）
+\definecolor{lpquote}{HTML}{D97B1F}   % 原话（橙）
+\definecolor{lpquotebg}{HTML}{FDF7EF}
+\definecolor{lpkey}{HTML}{FAF0C8}     % 关键公式（浅黄底）
+\definecolor{lpkeyframe}{HTML}{E9D79A}
+\definecolor{lpwarn}{HTML}{C0392B}    % 易错（红）
+\definecolor{lpintu}{HTML}{6A4C9C}    % 直觉（紫）
+\definecolor{lptip}{HTML}{B03A7A}     % 要点 / 考场写法（洋红）
+\definecolor{lpnote}{HTML}{6B6B6B}    % 注（灰）
+\definecolor{lpguide}{HTML}{2E7D32}   % 学习指南（绿）
+\definecolor{lpex}{HTML}{3D5A80}      % 例题（灰蓝）
+\definecolor{lpgray}{HTML}{8A8A8A}
+\definecolor{lprule}{HTML}{C9CED6}
+
+% ---------------------------------------------------------------- 版心
+\geometry{a4paper, left=24mm, right=24mm, top=27mm, bottom=25mm,
+  headheight=14pt, headsep=8mm, footskip=11mm}
+\setlength{\emergencystretch}{3em}
+\providecommand{\tightlist}{\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+\setlength{\parskip}{3pt plus 1pt}
+
+% ---------------------------------------------------------------- 页眉页脚
+\newcommand{\lpheadertitle}{}
+\newcommand{\lpsetheadertitle}[1]{\renewcommand{\lpheadertitle}{#1}}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\sffamily\color{lpgray}\nouppercase{\leftmark}}
+\fancyhead[R]{\small\sffamily\color{lpgray}\lpheadertitle}
+\fancyfoot[C]{\small\sffamily\color{lpgray}\thepage}
+\renewcommand{\headrule}{{\color{lprule}\hrule height 0.4pt}}
+\fancypagestyle{plain}{\fancyhf{}\renewcommand{\headrule}{}%
+  \fancyfoot[C]{\small\sffamily\color{lpgray}\thepage}}
+
+% ---------------------------------------------------------------- 标题
+\newif\iflpbook
+\ifdefined\chapter \lpbooktrue \else \lpbookfalse \fi
+
+\iflpbook
+\ctexset{
+  chapter = {
+    format      = \raggedright,
+    nameformat  = \sffamily\large\color{primary},
+    numberformat= \sffamily\large\color{primary},
+    titleformat = \sffamily\bfseries\color{primary}\fontsize{25}{34}\selectfont,
+    aftername   = \par\vspace{6pt},
+    beforeskip  = 10pt,
+    afterskip   = 14pt,
+    aftertitle  = {\par\vspace{8pt}{\color{lprule}\rule{\linewidth}{0.8pt}}},
+    pagestyle   = plain,
+    name        = {第,章},
+    number      = \arabic{chapter},
+  },
+  section = {
+    format      = \sffamily\bfseries\color{primary}\Large\raggedright,
+    aftername   = \hspace{1em},
+    beforeskip  = {16pt plus 4pt minus 2pt},
+    afterskip   = {8pt plus 2pt},
+  },
+  subsection = {
+    format      = \sffamily\bfseries\color{primary}\large\raggedright,
+    aftername   = \hspace{0.8em},
+    beforeskip  = {12pt plus 3pt minus 2pt},
+    afterskip   = {5pt plus 2pt},
+  },
+  subsubsection = {
+    format      = \sffamily\bfseries\color{primary!85!black}\normalsize\raggedright,
+    beforeskip  = {9pt plus 2pt},
+    afterskip   = {3pt plus 1pt},
+  },
+}
+\renewcommand{\chaptermark}[1]{\markboth{\CTEXifname{\CTEXthechapter\quad}{}#1}{}}
+% 「部分」分隔页：上半页主色横幅，白字。Markdown：# 标题 {.part}
+\newcommand{\lppartband}{\begin{tikzpicture}[remember picture, overlay]
+    \fill[primary] (current page.north west) rectangle ([yshift=-11cm]current page.north east);
+    \fill[primary!55] ([yshift=-11cm]current page.north west) rectangle ([yshift=-11.45cm]current page.north east);
+  \end{tikzpicture}}
+\ctexset{
+  part = {
+    name        = {第,部分},
+    number      = \chinese{part},
+    format      = \lppartband\raggedright,
+    nameformat  = \sffamily\Large\color{white!85!primary},
+    numberformat= \sffamily\Large\color{white!85!primary},
+    titleformat = \sffamily\bfseries\color{white}\fontsize{30}{40}\selectfont,
+    aftername   = \par\vspace{12pt},
+    beforeskip  = 3.2cm,
+    afterskip   = 0pt plus 1fil,
+    pagestyle   = empty,
+  },
+}
+\providecommand{\theHchapter}{}
+\renewcommand{\theHchapter}{\arabic{part}.\arabic{chapter}}
+\else
+\ctexset{
+  section = {
+    format      = \sffamily\bfseries\color{primary}\Large\raggedright,
+    aftername   = \hspace{1em},
+    beforeskip  = {16pt plus 4pt minus 2pt},
+    afterskip   = {8pt plus 2pt},
+  },
+  subsection = {
+    format      = \sffamily\bfseries\color{primary}\large\raggedright,
+    aftername   = \hspace{0.8em},
+    beforeskip  = {12pt plus 3pt minus 2pt},
+    afterskip   = {5pt plus 2pt},
+  },
+  subsubsection = {
+    format      = \sffamily\bfseries\color{primary!85!black}\normalsize\raggedright,
+    beforeskip  = {9pt plus 2pt},
+    afterskip   = {3pt plus 1pt},
+  },
+}
+\renewcommand{\sectionmark}[1]{\markboth{\CTEXifname{\CTEXthesection\quad}{}#1}{}}
+\fi
+\ctexset{paragraph/format = \sffamily\bfseries\color{primary}}
+% 无编号章节也写进页眉
+\newcommand{\lpmark}[1]{\markboth{#1}{#1}}
+
+% ---------------------------------------------------------------- 目录
+\ctexset{contentsname = {目录}}
+\RequirePackage{titletoc}
+\iflpbook
+\titlecontents{part}[0pt]{\addvspace{16pt}\sffamily\bfseries\large\color{primary}}
+  {\contentslabel[\partname]{0pt}\hspace*{5.2em}}{}{\hfill\contentspage}[\addvspace{4pt}]
+\titlecontents{chapter}[4.6em]{\addvspace{11pt}\bfseries}
+  {\contentslabel{4.6em}}{\hspace*{-4.6em}}
+  {\hfill\contentspage}[\addvspace{2pt}]
+\titlecontents{section}[4.4em]{\addvspace{1pt}}
+  {\contentslabel{3em}}{\hspace*{-3em}}{\titlerule*[0.7pc]{.}\contentspage}
+\titlecontents{subsection}[7.4em]{\small}
+  {\contentslabel{3em}}{\hspace*{-3em}}{\titlerule*[0.7pc]{.}\contentspage}
+\renewcommand{\contentsname}{目录}
+\else
+\titlecontents{section}[2.2em]{\addvspace{6pt}\bfseries}
+  {\contentslabel{2.2em}}{\hspace*{-2.2em}}{\hfill\contentspage}
+\titlecontents{subsection}[5.2em]{}
+  {\contentslabel{3em}}{\hspace*{-3em}}{\titlerule*[0.7pc]{.}\contentspage}
+\fi
+
+% ---------------------------------------------------------------- 列表
+\setlist{topsep=3pt, itemsep=2pt, parsep=1pt}
+\setlist[itemize,1]{label={\color{primary}\small\textbullet}, leftmargin=1.6em}
+\setlist[itemize,2]{label={\color{primary!70}\scriptsize$\blacktriangleright$}, leftmargin=1.4em}
+\setlist[enumerate,1]{leftmargin=2em}
+\setlist[description]{font=\sffamily\bfseries\color{primary}, leftmargin=5em,
+  labelwidth=4.2em, labelsep=0.8em, labelindent=0pt, align=left, itemsep=4pt}
+
+% ---------------------------------------------------------------- 图表
+\captionsetup{font={small}, labelfont={sf,bf,color=primary}, labelsep=quad,
+  skip=6pt}
+\captionsetup[table]{position=top}
+\renewcommand{\arraystretch}{1.3}
+\setlength{\heavyrulewidth}{1pt}
+\setlength{\lightrulewidth}{0.5pt}
+\makeatletter
+\newsavebox\pandoc@box
+\newcommand*\pandocbounded[1]{%
+  \sbox\pandoc@box{#1}%
+  \Gscale@div\@tempa{\textheight}{\dimexpr\ht\pandoc@box+\dp\pandoc@box\relax}%
+  \Gscale@div\@tempb{\linewidth}{\wd\pandoc@box}%
+  \ifdim\@tempb\p@<\@tempa\p@\let\@tempa\@tempb\fi
+  \ifdim\@tempa\p@<\p@\scalebox{\@tempa}{\usebox\pandoc@box}%
+  \else\usebox{\pandoc@box}\fi}
+\def\fps@figure{htbp}
+\makeatother
+\newcounter{none}
+
+% ---------------------------------------------------------------- 行内标记
+% 标签 \lptag[颜色]{文字}；出处 \lpsrc{L2 p.9}；强调 \lphl{文字}；填空 \lpblank{宽度}
+\newcommand{\lptag}[2][lpgray]{{\setlength{\fboxsep}{1.5pt}%
+  \colorbox{#1!12}{\scriptsize\sffamily\color{#1!85!black}\strut #2}}}
+\newcommand{\lpsrc}[1]{{\scriptsize\sffamily\color{lpgray}〔#1〕}}
+\newcommand{\lphl}[1]{{\sffamily\bfseries\color{lpdef}#1}}
+\newcommand{\lpmarker}[1]{{\setlength{\fboxsep}{1pt}\colorbox{lpkey}{#1}}}
+\newcommand{\lpblank}[1][4em]{\underline{\hspace{#1}}}
+
+% ---------------------------------------------------------------- 彩色框
+\tcbset{lpbase/.style={enhanced, breakable, sharp corners=south, arc=2pt,
+  left=8pt, right=8pt, top=5pt, bottom=5pt, before skip=8pt, after skip=8pt,
+  fontupper=\normalsize}}
+
+% 带标题条、编号的框：定义、结论、例题（书籍按章编号 2.1、2.2…）
+\tcbset{lptitled/.style={lpbase, colback=white, colframe=#1, boxrule=0.8pt,
+  coltitle=white, colbacktitle=#1, fonttitle=\sffamily\bfseries\small,
+  toptitle=2pt, bottomtitle=2pt, arc=3pt}}
+\newcommand{\lpmaketitledbox}[3]{%
+  \iflpbook
+    \newtcolorbox[auto counter, number within=chapter]{#1}[2][#3]{lptitled=#2,
+      title={##1~\thetcbcounter\ifstrempty{##2}{}{\hspace{1.2em}##2}}}%
+  \else
+    \newtcolorbox[auto counter]{#1}[2][#3]{lptitled=#2,
+      title={##1~\thetcbcounter\ifstrempty{##2}{}{\hspace{1.2em}##2}}}%
+  \fi
+  \newtcolorbox{#1*}[2][#3]{lptitled=#2,
+    title={##1\ifstrempty{##2}{}{\hspace{1.2em}##2}}}}
+\lpmaketitledbox{lpdef}{lpdef}{定义}
+\lpmaketitledbox{lpthm}{lpthm}{结论}
+\lpmaketitledbox{lpexample}{lpex}{例}
+
+% 左竖条 + 行首彩色标签：易错、直觉、要点、注
+\newcommand{\lpmakestripbox}[3]{% #1 环境名 #2 颜色 #3 默认标签
+  \newtcolorbox{#1}[1][#3]{lpbase, colback=#2!5, colframe=#2, boxrule=0pt,
+    leftrule=3pt, sharp corners, left=9pt, top=4pt, bottom=4pt,
+    before upper={{\sffamily\bfseries\small\color{#2}##1}\hspace{1em}}}}
+\lpmakestripbox{lpwarn}{lpwarn}{易错}
+\lpmakestripbox{lpintuition}{lpintu}{直觉}
+\lpmakestripbox{lptip}{lptip}{要点}
+\lpmakestripbox{lpnote}{lpnote}{注}
+
+% 原话 / 引用：浅橙底、左橙条、标题小字、内容楷体
+\newtcolorbox{lpquote}[1][引用]{lpbase, colback=lpquotebg, colframe=lpquote,
+  boxrule=0pt, leftrule=2.5pt, sharp corners, left=10pt,
+  fontupper=\kaishu, before upper={{\sffamily\bfseries\small\color{lpquote}#1}\par\vspace{2pt}}}
+\newcommand{\lpattrib}[1]{\par\vspace{-2pt}{\hfill\scriptsize\sffamily\color{lpquote}——\,#1}\par}
+
+% 关键公式：浅黄底
+\newtcolorbox{lpkey}{lpbase, colback=lpkey, colframe=lpkeyframe, boxrule=0.5pt,
+  arc=3pt, halign=center, top=1pt, bottom=4pt,
+  before upper={\setlength{\abovedisplayskip}{2pt}\setlength{\belowdisplayskip}{2pt}%
+    \setlength{\abovedisplayshortskip}{2pt}\setlength{\belowdisplayshortskip}{2pt}}}
+
+% 答案条：浅黄底、小号无衬线
+\newtcolorbox{lpanswer}{lpbase, colback=lpkey!85, colframe=lpkey, boxrule=0pt,
+  sharp corners, top=3pt, bottom=3pt, left=6pt, before skip=4pt, after skip=6pt,
+  fontupper=\small\sffamily}
+
+% 学习指南（绿框）、信息框（主色淡底）
+\newtcolorbox{lpguide}[1][学习指南]{lpbase, colback=lpguide!3, colframe=lpguide,
+  boxrule=0.8pt, arc=3pt, coltitle=white, colbacktitle=lpguide,
+  fonttitle=\sffamily\bfseries\small, title={#1}, toptitle=1pt, bottomtitle=1pt,
+  before upper={\setlist[description]{font=\sffamily\bfseries\small\color{lpguide}}}}
+\newtcolorbox{lpinfo}[1][]{lpbase, colback=primary!3, colframe=primary!35,
+  boxrule=0.6pt, arc=4pt, left=14pt, right=14pt, top=9pt, bottom=9pt,
+  coltitle=primary, colbacktitle=primary!9, fonttitle=\sffamily\bfseries, #1}
+
+% 通用卡片：白底细灰框（勘误、条目等）
+\newtcolorbox{lpcard}{lpbase, colback=white, colframe=lpgray!45, boxrule=0.5pt,
+  arc=3pt, top=5pt, bottom=5pt, before skip=6pt, after skip=6pt, fontupper=\small}
+
+% 普通引用块（Markdown 的 >）：灰色左条
+\renewenvironment{quote}{\begin{tcolorbox}[lpbase, colback=lpnote!4,
+  colframe=lpnote!50, boxrule=0pt, leftrule=2.5pt, sharp corners]}{\end{tcolorbox}}
+
+% 代码块
+\AtBeginDocument{%
+  \ifdefined\Shaded
+    \renewenvironment{Shaded}{\begin{tcolorbox}[lpbase, colback=lpnote!6,
+      colframe=lpnote!25, boxrule=0.4pt, arc=2pt, fontupper=\small]}{\end{tcolorbox}}%
+  \fi}
+
+% 选择题选项：\begin{lpchoices}{2}\lpchoice{(A)}{内容}\lpchoice{(B)}{…}\end{lpchoices}
+% （由 boxes.lua 生成，选项之间不要空行）
+\newlength{\lpchoicewidth}
+\newcounter{lpchoicecol}
+\newcommand{\lpchoicecols}{2}
+\newenvironment{lpchoices}[1]{\par\vspace{2pt}\renewcommand{\lpchoicecols}{#1}%
+  \setcounter{lpchoicecol}{0}%
+  \setlength{\lpchoicewidth}{\dimexpr(\linewidth-1.5em-#1em+1em)/#1\relax}%
+  \noindent\hspace*{1.5em}\ignorespaces}{\par\vspace{2pt}}
+\newcommand{\lpchoice}[2]{%
+  \ifnum\value{lpchoicecol}=\lpchoicecols\relax
+    \par\vspace{3pt}\noindent\hspace*{1.5em}\setcounter{lpchoicecol}{0}%
+  \else\ifnum\value{lpchoicecol}>0 \hspace{1em}\fi\fi
+  \stepcounter{lpchoicecol}%
+  \begin{minipage}[t]{\lpchoicewidth}\raggedright
+    \hangindent=2em\hangafter=1\makebox[2em][l]{#1}\ignorespaces#2\end{minipage}\ignorespaces}
+
+% ---------------------------------------------------------------- 封面
+% \lpcover{顶行}{标题}{副标题}  —— 书籍：整页封面；文章：首页顶部横幅
+\newcommand{\lpcoverart}{%
+  \begin{scope}
+    \foreach \x/\y/\o in {0/0/35,1/0/60,2/0/25,3/0/45,0/1/70,1/1/20,2/1/55,3/1/30,
+                          0/2/25,1/2/50,2/2/80,3/2/40,0/3/45,1/3/30,2/3/20,3/3/65}{
+      \fill[white, opacity=0.\o] (\x*0.62, -\y*0.62) rectangle ++(0.5,-0.5);}
+  \end{scope}}
+\newif\iflpcoverart \lpcoverarttrue
+\newcommand{\lpcover}[4][7.6cm]{% #1 横幅高度
+  \thispagestyle{empty}%
+  \begin{tikzpicture}[remember picture, overlay]
+    \fill[primary] (current page.north west) rectangle ([yshift=-#1]current page.north east);
+    \fill[primary!55] ([yshift=-#1]current page.north west) rectangle ([yshift=-#1-0.45cm]current page.north east);
+    \node[anchor=north west, inner sep=0pt, text width=12.4cm, align=left]
+      at ([xshift=24mm, yshift=-0.27*#1]current page.north west) {%
+        \ifstrempty{#2}{}{{\sffamily\Large\color{white!92!primary}#2}\par\vspace{10pt}}%
+        {\sffamily\bfseries\color{white}\fontsize{30}{40}\selectfont #3\par}%
+        \ifstrempty{#4}{}{\vspace{10pt}{\sffamily\large\color{white!82!primary}#4}\par}};
+    \iflpcoverart
+    \begin{scope}[shift={([xshift=-24mm-2.4cm, yshift=-0.27*#1-0.1cm]current page.north east)}]
+      \lpcoverart
+    \end{scope}
+    \fi
+  \end{tikzpicture}%
+  \par\vspace*{\dimexpr#1-27mm+0.6cm\relax}}
+\newcommand{\lpcoverbook}[3]{\lpcover[8cm]{#1}{#2}{#3}\vspace*{1.6cm}}
+\newcommand{\lpcoverarticle}[3]{\lpcover[5.6cm]{#1}{#2}{#3}}
+
+\endinput

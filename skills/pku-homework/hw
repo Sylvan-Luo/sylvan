@@ -1,0 +1,263 @@
+#!/usr/bin/env python3
+"""hw — 北大教学网（course.pku.edu.cn）作业：列出、读题下载、提交。
+
+  hw list [--all] [--todo]        作业列表（默认当前学期；--todo 只看未交且没过期的）
+  hw show ID                      作业要求、附件、链接、已交记录
+  hw get ID [-d 目录]             下载要求(说明.md/html)和附件到工作目录（默认 ~/data/tools/pku-homework/work/课程/作业/materials）
+  hw submit ID [-f 文件]... [--text 文字 | --text-file 文件] [--comment 文字] [--dry | --draft | --confirm]
+                                  默认 --dry：只在教学网页面里填好、截图，不提交
+                                  --draft：保存草稿；--confirm：正式提交（必须先经用户同意）
+  hw status ID                    看提交记录
+  hw me                           姓名、学号（文件命名用）
+ID 是 list 里第一列（成绩列编号，如 465165）。运行在用户笔记本的专用 Chrome 里（经 tsx sh mac）。
+"""
+import argparse, base64, datetime as dt, json, os, re, shutil, subprocess, sys, tempfile, time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+DATA = Path(os.path.expanduser('~/data/tools/pku-homework'))
+CACHE = DATA / 'cache.json'
+HOST = os.environ.get('HW_HOST', 'mac')
+WIN_HW = r'C:\Users\<WinUser>\AppData\Local\ClaudeHw'  # %LOCALAPPDATA%\ClaudeHw，只用于 tsx push/pull
+MARK = '@@HW@@'
+
+
+def ps(body, timeout=900):
+    lib = base64.b64encode((HERE / 'lib.js').read_bytes()).decode()
+    script = (HERE / 'cdp.ps1').read_text() + f"\n$Lib=B64 '{lib}'\nfunction HwEv($call){{ Ev ($Lib + \"`n;\" + $call) }}\n" \
+        + "try{\n" + body + "\n}catch{ Write-Output ('" + MARK + "ERR '+$_.Exception.Message); exit 3 }\n"
+    p = subprocess.run(['tsx', 'sh', HOST, '--timeout', str(timeout)], input=script.encode(), capture_output=True, timeout=timeout + 60)
+    out = p.stdout.decode('utf-8', 'replace').replace('\r', '')
+    err = [l[len(MARK) + 4:] for l in out.splitlines() if l.startswith(MARK + 'ERR ')]
+    if err or p.returncode:
+        msg = err[0] if err else (out + p.stderr.decode('utf-8', 'replace'))[-1500:]
+        if 'NOCHROME' in msg: msg += '\n→ 先执行 pcweb start（专用 Chrome），教学网登录状态会保留。'
+        sys.exit('hw: ' + msg)
+    res = [l[len(MARK):] for l in out.splitlines() if l.startswith(MARK)]
+    return res
+
+
+def jsq(s):  # 把 Python 字符串安全地放进 JS
+    return json.dumps(s, ensure_ascii=False)
+
+
+def psq(s):  # PowerShell 单引号字符串
+    return "'" + s.replace("'", "''") + "'"
+
+
+def call(js, timeout=900):
+    b = base64.b64encode(js.encode()).decode()
+    r = ps(f"Ready\nWrite-Output ('{MARK}' + (HwEv (B64 '{b}')))", timeout)
+    return json.loads(r[0]) if r else None
+
+
+def fmt_due(s):
+    if not s: return '无截止'
+    d = dt.datetime.fromisoformat(s.replace('Z', '+00:00')).astimezone(dt.timezone(dt.timedelta(hours=8)))
+    return d.strftime('%m-%d %H:%M')
+
+
+def overdue(s):
+    return bool(s) and dt.datetime.fromisoformat(s.replace('Z', '+00:00')) < dt.datetime.now(dt.timezone.utc)
+
+
+def load_cache():
+    return json.loads(CACHE.read_text()) if CACHE.exists() else {}
+
+
+def lookup(i):
+    i = i.strip('_').replace('_1', '') if i.startswith('_') else i
+    c = load_cache()
+    if i not in c:
+        cmd_list(argparse.Namespace(all=True, todo=False, quiet=True))
+        c = load_cache()
+    if i not in c: sys.exit(f'hw: 找不到作业 {i}（先 hw list 看编号）')
+    return c[i]
+
+
+def safe(s):
+    return re.sub(r'[\\/:*?"<>|\s]+', '_', s).strip('_')[:80]
+
+
+def cmd_list(a):
+    items = call(f"__hw.list({jsq('all' if a.all else 'cur')})")
+    DATA.mkdir(parents=True, exist_ok=True)
+    c = load_cache()
+    for x in items: c[x['col'].strip('_').replace('_1', '')] = x
+    CACHE.write_text(json.dumps(c, ensure_ascii=False, indent=1))
+    if getattr(a, 'quiet', False): return
+    items.sort(key=lambda x: (x['due'] is None, x['due'] or '', x['courseName']))
+    rows = []
+    for x in items:
+        n = len(x['attempts']); st = [t['status'] for t in x['attempts']]
+        if n == 0 or all(s == 'InProgress' for s in st):
+            state = '有草稿' if n else '未交'
+            if overdue(x['due']): state += '(已过期)'
+        else:
+            state = f'已交{n - st.count("InProgress")}'
+            if x['attemptsAllowed']: state += f'/{x["attemptsAllowed"]}'
+        if a.todo and (state.startswith('已交') or '过期' in state): continue
+        kind = '' if 'assignment' in x['kind'] else ('[测验]' if 'test' in x['kind'] else f'[{x["kind"]}]')
+        rows.append(f"{x['col'].strip('_').replace('_1', ''):>7}  {fmt_due(x['due']):11}  {state:12}  {x['courseName']}｜{x['name']}{kind}")
+    print('\n'.join(rows) if rows else '（没有）')
+
+
+def html2text(h):
+    h = re.sub(r'<br\s*/?>|</(div|p|li|h\d|tr)>', '\n', h, flags=re.I)
+    h = re.sub(r'<[^>]+>', '', h)
+    for k, v in {'&nbsp;': ' ', '&lt;': '<', '&gt;': '>', '&amp;': '&', '&quot;': '"'}.items(): h = h.replace(k, v)
+    return re.sub(r'\n\s*\n+', '\n', '\n'.join(l.strip() for l in h.splitlines())).strip()
+
+
+def detail(x):
+    return call(f"__hw.detail({jsq(x['course'])},{jsq(x['content'])},{jsq(x['col'])})")
+
+
+def show_text(x, d):
+    L = [f"# {x['courseName']}｜{x['name']}", f"截止：{fmt_due(x['due'])}（北京时间）  满分：{x['possible']}  "
+         f"允许提交次数：{x['attemptsAllowed'] or '不限'}  类型：{d['handler']}", '', html2text(d['body'])]
+    if d['attachments']: L += ['', '附件：'] + [f"- {f['name']}" for f in d['attachments']]
+    if d['links']: L += ['', '正文里的链接：'] + [f"- {l['text']} {l['href']}" for l in d['links']]
+    L += ['', '提交记录：' + ('无' if not d['attempts'] else '')]
+    for t in d['attempts']:
+        L.append(f"- {t['id']} {t['status']} {fmt_due(t.get('created'))} 文件:{','.join(t.get('files') or []) or '-'} 分数:{t.get('score', '-')}")
+    return '\n'.join(L)
+
+
+def cmd_show(a):
+    x = lookup(a.id); print(show_text(x, detail(x)))
+
+
+def download(url, dest: Path, name=None):
+    """在浏览器里下载（带登录），存到笔记本 ClaudeHw\\dl，再 tsx pull 到 dest。"""
+    b = base64.b64encode(f"__hw.b64({jsq(url)})".encode()).decode()
+    r = ps(f"""Ready
+$o=(HwEv (B64 '{b}'))|ConvertFrom-Json
+$d="$HwDir\\dl\\"+[guid]::NewGuid().ToString('N'); New-Item -ItemType Directory -Force $d|Out-Null
+$n=$o.name; if(-not $n){{$n=(B64 '{base64.b64encode((name or 'file').encode()).decode()}')}}; $n=$n -replace '[\\\\/:*?"<>|]','_'
+[IO.File]::WriteAllBytes("$d\\$n",[Convert]::FromBase64String($o.data))
+Write-Output ('{MARK}'+"$d\\$n")""", 3600)
+    win = r[0]
+    tmp = Path(tempfile.mkdtemp(prefix='hwdl'))
+    subprocess.run(['tsx', 'pull', HOST, win, '-d', str(tmp)], check=True, capture_output=True)
+    got = list(tmp.iterdir())
+    dest.mkdir(parents=True, exist_ok=True)
+    out = []
+    for g in got:
+        t = dest / g.name
+        if t.exists(): t.unlink() if t.is_file() else shutil.rmtree(t)
+        shutil.move(str(g), t); out.append(t)
+    shutil.rmtree(tmp, ignore_errors=True)
+    ps(f"Remove-Item -Recurse -Force (Split-Path {psq(win)})")
+    return out
+
+
+def cmd_get(a):
+    x = lookup(a.id); d = detail(x)
+    base = Path(a.d).expanduser() if a.d else DATA / 'work' / safe(x['courseName']) / safe(x['name'])
+    mat = base / 'materials'; mat.mkdir(parents=True, exist_ok=True)
+    (mat / '说明.md').write_text(show_text(x, d) + '\n')
+    (mat / '说明.html').write_text(d['body'])
+    for f in d['attachments']:
+        for p in download(f['url'], mat, f['name']): print('附件', p)
+    for l in d['links']:  # 正文里指向教学网文件的链接也下载
+        if l['href'].startswith('https://course.pku.edu.cn/bbcswebdav/'):
+            try:
+                for p in download(l['href'], mat, l['href'].split('?')[0].rsplit('/', 1)[-1]): print('链接文件', p)
+            except SystemExit as e: print('下载失败', l['href'], e)
+    (base / 'submit').mkdir(exist_ok=True)
+    print('说明', mat / '说明.md'); print('工作目录', base)
+
+
+def cmd_me(a):
+    m = call("fetch('/learn/api/public/v1/users/me').then(r=>r.json())")
+    print(f"姓名 {m['name']['given']}  学号 {m['userName']}  邮箱 {m.get('contact', {}).get('email', '')}")
+
+
+def cmd_status(a):
+    x = lookup(a.id); d = detail(x)
+    print(f"{x['courseName']}｜{x['name']}  截止 {fmt_due(x['due'])}")
+    if not d['attempts']: print('还没有提交')
+    for t in d['attempts']:
+        print(f"- {t['status']}  {fmt_due(t.get('created'))}  文件:{','.join(t.get('files') or []) or '-'}  分数:{t.get('score', '-')}")
+
+
+def shot(name):
+    r = ps(f"$r=Cdp (HwTab) 'Page.captureScreenshot' @{{format='png';captureBeyondViewport=$true}}; $p=\"$HwDir\\{name}\"; "
+           f"[IO.File]::WriteAllBytes($p,[Convert]::FromBase64String($r.result.data)); Write-Output ('{MARK}'+$p)")
+    out = DATA / 'shots'; out.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(prefix='hwshot'))
+    subprocess.run(['tsx', 'pull', HOST, r[0], '-d', str(tmp)], check=True, capture_output=True)
+    f = out / f"{time.strftime('%m%d_%H%M%S')}_{name}"
+    shutil.move(str(next(tmp.iterdir())), f); shutil.rmtree(tmp, ignore_errors=True)
+    return f
+
+
+def cmd_submit(a):
+    x = lookup(a.id)
+    mode = 'confirm' if a.confirm else 'draft' if a.draft else 'dry'
+    if 'assignment' not in x['kind']: sys.exit(f"hw: 这不是普通作业（{x['kind']}），工具只提交「作业」类型；测验请让用户自己做。")
+    done = [t for t in x['attempts'] if t['status'] != 'InProgress']
+    if mode == 'confirm' and x['attemptsAllowed'] and len(done) >= x['attemptsAllowed']:
+        sys.exit(f"hw: 已经交了 {len(done)} 次，允许 {x['attemptsAllowed']} 次，不能再交。")
+    if mode == 'confirm' and overdue(x['due']):
+        print('注意：已过截止时间，教学网可能标记为迟交或不让交。')
+    text = Path(a.text_file).read_text() if a.text_file else a.text
+    files = [Path(f).expanduser().resolve() for f in a.f or []]
+    for f in files:
+        if not f.is_file(): sys.exit(f'hw: 文件不存在 {f}')
+        if len(f.name) > 120: sys.exit(f'hw: 文件名太长 {f.name}')
+    if not files and not text: sys.exit('hw: 没有要提交的文件或文字')
+    # 1) 文件传到笔记本
+    up = WIN_HW + '\\up\\' + time.strftime('%Y%m%d%H%M%S')
+    if files:
+        ps(f"New-Item -ItemType Directory -Force {psq(up)}|Out-Null")
+        for f in files:
+            subprocess.run(['tsx', 'push', HOST, str(f), '-d', up], check=True, capture_output=True)
+    # 2) 打开上传页、填表
+    url = f"https://course.pku.edu.cn/webapps/assignment/uploadAssignment?content_id={x['content']}&course_id={x['course']}&group_id=&mode=view"
+    names = jsq([f.name for f in files])
+    js_args = f"$names=ConvertFrom-Json {psq(names)}; $arr=@(); foreach($n in @($names)){{ if($n){{ $arr+=@{{name=$n;b64=[Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path {psq(up)} $n)))}} }} }}"
+    call_js = "\"__hw.fill(\" + (ConvertTo-Json @($arr) -Compress -Depth 3) + \",\" + " + psq(jsq(text)) + " + \",\" + " + psq(jsq(a.comment)) + " + \")\""
+    r = ps(f"""Ready
+Nav {psq(url)}
+{js_args}
+Write-Output ('{MARK}'+(HwEv ({call_js})))""", 1800)
+    st = json.loads(r[0])
+    if st.get('error'): sys.exit('hw: ' + st['error'])
+    print('已填好：', json.dumps(st, ensure_ascii=False, indent=1))
+    if st.get('existingDraftFiles'):
+        print('注意：页面上原来就有草稿文件', st['existingDraftFiles'], '——会一起提交。')
+    print('截图（填好后）：', shot('filled.png'))
+    if mode == 'dry':
+        print('这是 --dry：没有提交。重新打开页面以丢弃填写。')
+        ps(f"Ready\nNav {psq(url)}"); return
+    which = '提交' if mode == 'confirm' else '保存草稿'
+    r = ps(f"Write-Output ('{MARK}'+(HwEv {psq('__hw.click(' + jsq(which) + ')')}))\nStart-Sleep 6\n"
+           f"foreach($i in 1..60){{ try{{ if((Ev 'document.readyState') -eq 'complete'){{break}} }}catch{{}}; Start-Sleep 1 }}\n"
+           f"Write-Output ('{MARK}'+(Ev 'location.href+\"\\n\"+document.body.innerText.slice(0,600)'))", 1800)
+    print('\n'.join(r))
+    print('截图（点击后）：', shot('after.png'))
+    time.sleep(2)
+    cmd_list(argparse.Namespace(all=False, todo=False, quiet=True))
+    cmd_status(a)
+    if files: ps(f"Remove-Item -Recurse -Force {psq(up)}")
+
+
+def main():
+    p = argparse.ArgumentParser(prog='hw', description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    s = p.add_subparsers(dest='cmd')
+    l = s.add_parser('list'); l.add_argument('--all', action='store_true'); l.add_argument('--todo', action='store_true')
+    s.add_parser('me')
+    for n in ('show', 'status'): s.add_parser(n).add_argument('id')
+    g = s.add_parser('get'); g.add_argument('id'); g.add_argument('-d')
+    u = s.add_parser('submit'); u.add_argument('id'); u.add_argument('-f', action='append')
+    u.add_argument('--text'); u.add_argument('--text-file'); u.add_argument('--comment')
+    m = u.add_mutually_exclusive_group(); m.add_argument('--dry', action='store_true'); m.add_argument('--draft', action='store_true'); m.add_argument('--confirm', action='store_true')
+    a = p.parse_args()
+    if not a.cmd: print(__doc__); return
+    {'list': cmd_list, 'me': cmd_me, 'show': cmd_show, 'get': cmd_get, 'status': cmd_status, 'submit': cmd_submit}[a.cmd](a)
+
+
+if __name__ == '__main__':
+    main()

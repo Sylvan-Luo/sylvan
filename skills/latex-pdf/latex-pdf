@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""latex-pdf：Markdown / Word / HTML / LaTeX → 套精美 LaTeX 模板 → PDF。
+
+流程：pandoc（+ boxes.lua 过滤器）先转成 .tex，套 template/latex-pdf.tex 与
+latex-pdf-theme.sty，再用 XeLaTeX（latexmk）编译成 PDF。
+
+  latex-pdf 笔记.md                     # 生成 笔记.pdf（同目录）
+  latex-pdf 笔记.md -o ~/Desktop/x.pdf  # 指定输出
+  latex-pdf 笔记.md --book --toc        # 书籍版：整页封面、目录、按章
+  latex-pdf 笔记.md --tex               # 同时保留 笔记.tex（可手改后再编译）
+  latex-pdf 笔记.tex                    # 完整 .tex 直接编译；只有正文片段则自动套模板
+  latex-pdf 报告.docx --theme teal      # Word/HTML 也可以，pandoc 能读的都行
+  latex-pdf --demo                      # 生成示例 PDF，看所有样式
+详见 ~/tools/latex-pdf/README.md
+"""
+import argparse
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+TPL = HERE / 'template'
+TEXBIN = Path.home() / 'Library/TinyTeX/bin/universal-darwin'
+PANDOC_CANDIDATES = [Path.home() / '.local/bin/pandoc', Path('/opt/homebrew/bin/pandoc'),
+                     Path('/usr/local/bin/pandoc')]
+
+READERS = {'.md': 'markdown', '.markdown': 'markdown', '.txt': 'markdown',
+           '.docx': 'docx', '.html': 'html', '.htm': 'html', '.odt': 'odt',
+           '.rst': 'rst', '.org': 'org', '.ipynb': 'ipynb', '.epub': 'epub',
+           '.tex': 'latex'}
+MD_EXT = ('markdown+east_asian_line_breaks+tex_math_dollars+fenced_divs'
+          '+bracketed_spans+pipe_tables+grid_tables+footnotes+definition_lists'
+          '+raw_tex+mark+emoji')
+
+
+def die(msg, code=1):
+    print('latex-pdf: ' + msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def find_pandoc():
+    for p in PANDOC_CANDIDATES:
+        if p.exists():
+            return str(p)
+    p = shutil.which('pandoc')
+    if p:
+        return p
+    die('找不到 pandoc（应在 ~/.local/bin/pandoc），见 README「安装」')
+
+
+def tex_env():
+    env = os.environ.copy()
+    if TEXBIN.exists():
+        env['PATH'] = str(TEXBIN) + os.pathsep + env.get('PATH', '')
+    elif not shutil.which('xelatex'):
+        die('找不到 XeLaTeX（应在 ~/Library/TinyTeX），见 README「安装」')
+    # 模板目录加进 TeX 搜索路径（末尾的 : 表示保留默认路径）
+    env['TEXINPUTS'] = str(TPL) + '//' + os.pathsep + env.get('TEXINPUTS', '')
+    return env
+
+
+def run_pandoc(src, fmt, out_tex, args, workdir):
+    cmd = [find_pandoc(), str(src), '-f', MD_EXT if fmt == 'markdown' else fmt,
+           '-t', 'latex', '-s', '--template', str(TPL / 'latex-pdf.tex'),
+           '--lua-filter', str(TPL / 'boxes.lua'),
+           '--resource-path', str(src.parent),
+           '-o', str(out_tex)]
+    meta = {}
+    if args.book:
+        meta['book'] = 'true'
+    if args.toc:
+        cmd.append('--toc')
+    if args.theme:
+        meta['theme'] = args.theme
+    if args.chapter_name:
+        meta['chapter-name'] = args.chapter_name
+    if args.title:
+        meta['title'] = args.title
+    for kv in args.meta or []:
+        if '=' not in kv:
+            die('--meta 要写成 键=值：' + kv)
+        k, v = kv.split('=', 1)
+        meta[k] = v
+    for k, v in meta.items():
+        cmd += ['-M', f'{k}={v}']
+    if args.book:
+        cmd.append('--top-level-division=chapter')
+    else:
+        cmd.append('--top-level-division=section')
+    if fmt in ('docx', 'odt', 'epub'):
+        cmd.append('--extract-media=' + str(workdir / 'media'))
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        die('pandoc 转换失败：\n' + r.stderr)
+    if r.stderr.strip():
+        print(r.stderr.strip(), file=sys.stderr)
+
+
+def wrap_fragment(src, out_tex, args, workdir):
+    """正文片段（没有 \\documentclass）：包成 Markdown 里的原样 LaTeX 块再套模板。"""
+    body = src.read_text(encoding='utf-8')
+    front = ''
+    m = re.match(r'\A---\n.*?\n---\n', body, re.S)  # 允许开头带 YAML
+    if m:
+        front, body = m.group(0), body[m.end():]
+    md = workdir / (src.stem + '.wrapped.md')
+    md.write_text(front + '\n```{=latex}\n' + body + '\n```\n', encoding='utf-8')
+    run_pandoc_from(md, src, out_tex, args, workdir)
+
+
+def run_pandoc_from(md, orig, out_tex, args, workdir):
+    class Shim:  # 资源路径用原文件所在目录
+        parent = orig.parent
+        def __str__(self):
+            return str(md)
+    run_pandoc(Shim(), 'markdown', out_tex, args, workdir)
+
+
+def compile_tex(tex, srcdir, outdir, env, verbose=False):
+    cmd = ['latexmk', '-xelatex', '-interaction=nonstopmode', '-halt-on-error',
+           '-file-line-error', '-outdir=' + str(outdir), str(tex)]
+    if not verbose:
+        cmd.insert(1, '-silent')
+    r = subprocess.run(cmd, cwd=str(srcdir), env=env, capture_output=True, text=True)
+    pdf = outdir / (tex.stem + '.pdf')
+    if r.returncode != 0 or not pdf.exists():
+        log = outdir / (tex.stem + '.log')
+        msg = ''
+        if log.exists():
+            lines = log.read_text(errors='replace').splitlines()
+            idx = [i for i, l in enumerate(lines)
+                   if l.startswith('! ') or re.match(r'^\S.*?:\d+: ', l)]
+            if idx:
+                i = idx[0]
+                msg = '\n'.join(lines[i:i + 10])
+        die('XeLaTeX 编译失败（.tex 和日志在 %s）：\n%s' % (outdir, msg or r.stdout[-3000:]))
+    if verbose:
+        print(r.stdout[-2000:])
+    return pdf
+
+
+def main():
+    ap = argparse.ArgumentParser(prog='latex-pdf', description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('input', nargs='?', help='输入文件：.md / .tex / .docx / .html …')
+    ap.add_argument('-o', '--output', help='输出 PDF 路径（默认与输入同名同目录）')
+    ap.add_argument('--book', action='store_true', help='书籍版：整页封面、按章（# = 章）')
+    ap.add_argument('--toc', action='store_true', help='加目录')
+    ap.add_argument('--theme', help='主色：navy（默认）teal wine forest ink purple orange')
+    ap.add_argument('--chapter-name', help='书籍版章名，如「讲」→ 第 2 讲（默认「章」）')
+    ap.add_argument('--title', help='覆盖标题')
+    ap.add_argument('-M', '--meta', action='append', help='其他元数据 键=值，可多次')
+    ap.add_argument('--tex', action='store_true', help='同时把生成的 .tex 存到 PDF 旁边')
+    ap.add_argument('--tex-only', action='store_true', help='只生成 .tex，不编译')
+    ap.add_argument('--keep', action='store_true', help='保留编译目录（排错用）')
+    ap.add_argument('-v', '--verbose', action='store_true')
+    ap.add_argument('--demo', action='store_true', help='用示例文件生成 PDF')
+    args = ap.parse_args()
+
+    if args.demo:
+        args.input = str(HERE / 'examples' / 'demo.md')
+        if not args.output:
+            args.output = str(Path.cwd() / 'latex-pdf-demo.pdf')
+    if not args.input:
+        ap.print_help()
+        sys.exit(2)
+
+    src = Path(args.input).expanduser().resolve()
+    if not src.exists():
+        die('找不到输入文件：' + str(src))
+    fmt = READERS.get(src.suffix.lower())
+    if fmt is None:
+        fmt = 'markdown'
+    # Markdown 里 YAML 写了 book: true 也算书籍版
+    if fmt == 'markdown':
+        head = src.read_text(encoding='utf-8', errors='replace')[:4000]
+        m = re.match(r'\A---\n(.*?)\n---', head, re.S)
+        if m and re.search(r'^book:\s*(true|yes)\s*$', m.group(1), re.M):
+            args.book = True
+
+    out_pdf = Path(args.output).expanduser().resolve() if args.output else src.with_suffix('.pdf')
+    out_pdf.parent.mkdir(parents=True, exist_ok=True)
+
+    workdir = Path(tempfile.mkdtemp(prefix='latex-pdf-'))
+    tex = workdir / (out_pdf.stem + '.tex')
+    env = tex_env()
+
+    if fmt == 'latex':
+        text = src.read_text(encoding='utf-8', errors='replace')
+        if '\\documentclass' in text:
+            shutil.copy(src, tex)
+        else:
+            wrap_fragment(src, tex, args, workdir)
+    else:
+        run_pandoc(src, fmt, tex, args, workdir)
+
+    if args.tex or args.tex_only:
+        dst = out_pdf.with_suffix('.tex')
+        if dst.resolve() != src:
+            shutil.copy(tex, dst)
+            print('LaTeX：' + str(dst))
+    if args.tex_only:
+        shutil.rmtree(workdir, ignore_errors=True)
+        return
+
+    pdf = compile_tex(tex, src.parent, workdir, env, args.verbose)
+    shutil.copy(pdf, out_pdf)
+    print('PDF：' + str(out_pdf))
+    if args.keep:
+        print('编译目录：' + str(workdir))
+    else:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+if __name__ == '__main__':
+    main()

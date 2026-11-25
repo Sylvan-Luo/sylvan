@@ -1,0 +1,42 @@
+#!/bin/zsh
+# pcctl — 看用户 Windows 电脑的屏幕、操作鼠标键盘（经 tsx sh，在用户桌面会话里运行）
+# 用法:
+#   pcctl shot [宽度=1280]          截全屏，打印本地 png 路径（坐标按原始分辨率，打印缩放比例）
+#   pcctl move X Y                  移动鼠标（原始屏幕像素坐标）
+#   pcctl click X Y | dclick X Y | rclick X Y
+#   pcctl scroll N                  滚轮（正数向上，负数向下，单位格）
+#   pcctl type '文字'               经剪贴板粘贴（支持中文）
+#   pcctl key '^l'                  SendKeys 语法：^=Ctrl %=Alt +=Shift {ENTER} {TAB} {ESC}
+set -e
+HOST=${PCCTL_HOST:-mac}
+OUT=${PCCTL_DIR:-$HOME/.cache/pcctl}; mkdir -p "$OUT"
+PRE=$(cat <<'PS'
+Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+Add-Type 'using System;using System.Runtime.InteropServices;public class W{[DllImport("user32.dll")]public static extern bool SetProcessDPIAware();[DllImport("user32.dll")]public static extern bool SetCursorPos(int x,int y);[DllImport("user32.dll")]public static extern void mouse_event(uint f,int x,int y,int d,UIntPtr e);}'
+[W]::SetProcessDPIAware()|Out-Null
+function Clk($d,$u){[W]::mouse_event($d,0,0,0,[UIntPtr]::Zero);Start-Sleep -m 40;[W]::mouse_event($u,0,0,0,[UIntPtr]::Zero)}
+PS
+)
+run(){ tsx sh $HOST "$PRE
+$1" }
+cmd=$1; shift || true
+case $cmd in
+  shot)
+    W=${1:-1280}
+    run '$b=[System.Windows.Forms.SystemInformation]::VirtualScreen;$m=New-Object System.Drawing.Bitmap $b.Width,$b.Height;$g=[System.Drawing.Graphics]::FromImage($m);$g.CopyFromScreen($b.Left,$b.Top,0,0,$m.Size);$p="$env:TEMP\pcctl_shot.png";$m.Save($p,[System.Drawing.Imaging.ImageFormat]::Png);"$($b.Width)x$($b.Height)|$p"' | tr -d '\r' | tail -1 >"$OUT/size.txt"
+    rm -f "$OUT"/pcctl_shot*.png(N)   # tsx pull 遇到同名会改名成 -2，不先删就会一直用旧图
+    tsx pull $HOST "$(cut -d'|' -f2 <"$OUT/size.txt")" -d "$OUT" >/dev/null
+    F="$OUT/shot_$(date +%H%M%S).png"
+    sips -Z $W "$OUT/pcctl_shot.png" --out "$F" >/dev/null
+    SZ=$(cut -d'|' -f1 <"$OUT/size.txt"); OW=${SZ%x*}
+    echo "$F  原始=$SZ  缩放=$(echo "scale=4;$OW/$W"|bc)（截图坐标×此值=原始坐标）" ;;
+  move)   run "[W]::SetCursorPos($1,$2)|Out-Null" ;;
+  click)  run "[W]::SetCursorPos($1,$2)|Out-Null;Clk 2 4" ;;
+  dclick) run "[W]::SetCursorPos($1,$2)|Out-Null;Clk 2 4;Start-Sleep -m 80;Clk 2 4" ;;
+  rclick) run "[W]::SetCursorPos($1,$2)|Out-Null;Clk 8 16" ;;
+  scroll) run "[W]::mouse_event(0x800,0,0,$(( $1 * 120 )),[UIntPtr]::Zero)" ;;
+  type)   B64=$(printf '%s' "$1" | base64)
+          run "[System.Windows.Forms.Clipboard]::SetText([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$B64')));[System.Windows.Forms.SendKeys]::SendWait('^v')" ;;
+  key)    run "[System.Windows.Forms.SendKeys]::SendWait('${1//\'/\'\'}')" ;;
+  *) sed -n '2,11p' "$0"; exit 1 ;;
+esac

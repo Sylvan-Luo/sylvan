@@ -1,0 +1,63 @@
+#!/bin/zsh
+# pcweb — 控制用户 Windows 电脑上一个专用 Chrome 配置（远程调试端口 9222，只监听本机）
+#   pcweb start [url]        启动专用 Chrome（配置在 %LOCALAPPDATA%\ClaudeChrome，登录状态会保留）
+#   pcweb close              关闭当前标签（可配合 PCWEB_TAB）
+#   pcweb tabs               列出标签页
+#   pcweb open URL           在当前标签打开网址
+#   pcweb new URL            新开标签
+#   pcweb eval 'JS表达式'    在当前标签执行 JS，返回结果（可用来读页面、点击元素、填表）
+#   pcweb text               当前页正文文字（前 20000 字）
+#   pcweb clicktext '文字'   用真实鼠标事件点击文字完全相同的元素
+#   pcweb shot               当前页截图（不需要窗口在前台），打印本地 png 路径
+# 当前标签 = 最近一次 open/new 的标签，或第一个普通网页标签；PCWEB_TAB=序号 或 PCWEB_ID=标签ID前缀（tabs 里花括号内）可指定
+# 多个会话同时用浏览器时请用 PCWEB_ID，序号会随别人开关标签变化
+set -e
+HOST=${PCCTL_HOST:-mac}; OUT=${PCCTL_DIR:-$HOME/.cache/pcctl}; mkdir -p "$OUT"
+CDP=$(cat <<'PS'
+$ErrorActionPreference='Stop'
+function Tabs{ $a=((Invoke-WebRequest -UseBasicParsing http://127.0.0.1:9222/json/list).Content | ConvertFrom-Json); @($a) | Where-Object {$_.type -eq 'page'} }
+function Pick{ $t=@(Tabs); if($env:PCWEB_ID){$m=$t|?{$_.id -like ($env:PCWEB_ID+"*")}|select -First 1; if($m){return $m}; throw "没有 ID 为 $($env:PCWEB_ID) 的标签"}; if($env:PCWEB_TAB){return $t[[int]$env:PCWEB_TAB]}; $f="$env:LOCALAPPDATA\ClaudeChrome\cur.txt"; if(Test-Path $f){$id=Get-Content $f; $m=$t|?{$_.id -eq $id}; if($m){return $m}}; return $t[0] }
+function Cdp($tab,$method,$params){
+  $ws=New-Object System.Net.WebSockets.ClientWebSocket; $ws.Options.KeepAliveInterval=[TimeSpan]::Zero
+  $ws.ConnectAsync([Uri]$tab.webSocketDebuggerUrl,[Threading.CancellationToken]::None).Wait()
+  $msg=@{id=1;method=$method;params=$params}|ConvertTo-Json -Depth 10 -Compress
+  $b=[Text.Encoding]::UTF8.GetBytes($msg)
+  $ws.SendAsync((New-Object 'ArraySegment[byte]' -ArgumentList (,$b)),[Net.WebSockets.WebSocketMessageType]::Text,$true,[Threading.CancellationToken]::None).Wait()
+  $ms=New-Object IO.MemoryStream; $buf=New-Object byte[] 1048576
+  while($true){ $seg=New-Object 'ArraySegment[byte]' -ArgumentList (,$buf); $r=$ws.ReceiveAsync($seg,[Threading.CancellationToken]::None); $r.Wait(); $ms.Write($buf,0,$r.Result.Count)
+    if($r.Result.EndOfMessage){ $s=[Text.Encoding]::UTF8.GetString($ms.ToArray()); if($s -match '"id":1[,}]'){break}; $ms.SetLength(0)} }
+  $ws.Dispose(); return ($s|ConvertFrom-Json)
+}
+function Ev($js){ $r=Cdp (Pick) 'Runtime.evaluate' @{expression=$js;returnByValue=$true;awaitPromise=$true}; if($r.result.exceptionDetails){'JS错误: '+$r.result.exceptionDetails.exception.description}else{$v=$r.result.result.value; if($v -is [string]){$v}else{$v|ConvertTo-Json -Depth 6}} }
+PS
+)
+run(){ tsx sh $HOST "$CDP
+${PCWEB_TAB:+\$env:PCWEB_TAB='$PCWEB_TAB'}
+${PCWEB_ID:+\$env:PCWEB_ID='$PCWEB_ID'}
+$1" }
+b64(){ printf '%s' "$1" | base64 }
+dec(){ echo "[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$(b64 "$1")'))" }
+cmd=$1; shift || true
+case $cmd in
+  start)
+    U=${1:-about:blank}
+    run "\$p=\"\$env:LOCALAPPDATA\ClaudeChrome\"; \$exe=@(\"\$env:ProgramFiles\Google\Chrome\Application\chrome.exe\",\"\${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe\",\"\$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe\")|?{Test-Path \$_}|select -First 1
+try{Tabs|Out-Null;'专用 Chrome 已在运行'}catch{Start-Process \$exe -ArgumentList '--remote-debugging-port=9222','--remote-debugging-address=127.0.0.1',\"\`\"--user-data-dir=\$p\\Profile\`\"\",'--no-first-run','--no-default-browser-check',\$($(dec "$U")); \$ok=\$false; 1..15|%{ if(-not \$ok){ Start-Sleep 1; try{Tabs|Out-Null; \$ok=\$true}catch{} } }; if(-not \$ok){throw '启动后 9222 端口没有响应'}; '已启动专用 Chrome'}" ;;
+  close) run '$t=Pick; Invoke-WebRequest -UseBasicParsing ("http://127.0.0.1:9222/json/close/"+$t.id)|Out-Null; "closed "+$t.title' ;;
+  tabs) run '$i=0; Tabs | % { "[$i] {$($_.id.Substring(0,8))} $($_.title)  $($_.url)"; $i++ }' ;;
+  open) run "\$u=$(dec "$1"); \$t=Pick; Cdp \$t 'Page.navigate' @{url=\$u}|Out-Null; Set-Content \"\$env:LOCALAPPDATA\ClaudeChrome\cur.txt\" \$t.id; Start-Sleep 2; Ev 'document.title+\"  \"+location.href'" ;;
+  new)  run "\$u=$(dec "$1"); \$t=(Invoke-WebRequest -UseBasicParsing -Method Put (\"http://127.0.0.1:9222/json/new?\"+\$u)).Content|ConvertFrom-Json; Set-Content \"\$env:LOCALAPPDATA\ClaudeChrome\cur.txt\" \$t.id; Start-Sleep 2; Ev 'document.title+\"  \"+location.href'" ;;
+  eval) run "Ev ($(dec "$1"))" ;;
+  text) run 'Ev "document.body.innerText.slice(0,20000)"' ;;
+  clicktext)  # 用真实鼠标事件点击“文字完全等于”参数的最内层元素
+    run "\$q=$(dec "$1"); \$t=Pick; \$js='(()=>{const q='+(\$q|ConvertTo-Json)+';const e=[...document.querySelectorAll(\"*\")].filter(x=>x.innerText&&x.innerText.trim()==q).pop();if(!e)return \"\";e.scrollIntoView({block:\"center\"});const r=e.getBoundingClientRect();return (r.x+r.width/2)+\",\"+(r.y+r.height/2)})()'
+\$r=Cdp \$t 'Runtime.evaluate' @{expression=\$js;returnByValue=\$true}; \$xy=\$r.result.result.value; if(-not \$xy){'没找到: '+\$q; exit 1}
+\$x,\$y=\$xy.Split(',')|%{[double]\$_}
+foreach(\$ty in 'mouseMoved','mousePressed','mouseReleased'){ Cdp \$t 'Input.dispatchMouseEvent' @{type=\$ty;x=\$x;y=\$y;button='left';clickCount=1}|Out-Null }
+'clicked '+\$xy" ;;
+  shot)
+    F="$OUT/page_$(date +%H%M%S).png"
+    run '$r=Cdp (Pick) "Page.captureScreenshot" @{format="png"}; $p="$env:TEMP\pcweb_shot.png"; [IO.File]::WriteAllBytes($p,[Convert]::FromBase64String($r.result.data)); $p' | tr -d '\r' | tail -1 > "$OUT/pw.txt"
+    tsx pull $HOST "$(cat "$OUT/pw.txt")" -d "$OUT" >/dev/null; mv "$OUT/pcweb_shot.png" "$F"; echo "$F" ;;
+  *) sed -n '2,11p' "$0"; exit 1 ;;
+esac
