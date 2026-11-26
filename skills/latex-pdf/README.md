@@ -134,5 +134,5 @@ Markdown 里可以直接写 LaTeX 命令；整段 LaTeX 用 ```` ```{=latex} ```
 
 - **不要在模板里探测 STKaiti / Kaiti SC**：macOS 上它们是“按需下载”字体，xelatex 查找时会一直卡住。
 - 第一次编译要建字体缓存，会慢一些；之后一份几页的文档 2–5 秒。
-- 输入在用户电脑上时：`tsx pull mac "~/Desktop/xx.md"` 拉过来，生成后 `tsx push mac xx.pdf -d "~/Desktop"`。
+- 输入在用户电脑上时：`tsx pull mac "~/Desktop/xx.md"` 拉过来，生成后 `desk put xx.pdf -c 类别`（放进桌面对应类别文件夹，见 desk 工具）。
 - Markdown 里的图片路径相对于 .md 文件所在目录。

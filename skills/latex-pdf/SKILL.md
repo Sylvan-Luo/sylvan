@@ -31,7 +31,7 @@ latex-pdf --demo -o demo.pdf              # 全部样式示例（examples/demo.m
 ## 注意
 
 - 只在 mini 上运行（pandoc 在 ~/.local/bin，TinyTeX 在 ~/Library/TinyTeX）。用户电脑上的文件先
-  `tsx pull mac "…"`，生成后 `tsx push mac x.pdf -d "~/Desktop"` 放到他桌面。
+  `tsx pull mac "…"`，生成后 `desk put x.pdf -c 类别[/子目录]` 放进他桌面对应的类别文件夹（见 desk 技能）。
 - 编译失败会打印 LaTeX 报错；缺宏包 `~/Library/TinyTeX/bin/universal-darwin/tlmgr install <包>`。
 - 不要在模板里用 STKaiti/Kaiti SC（macOS 按需下载字体，xelatex 会卡死）；楷体用已装的霞鹜文楷。
 - 改模板/样式：`~/tools/latex-pdf/template/`，改完 `latex-pdf --demo` 看效果，按 toolbox 规矩提交。
