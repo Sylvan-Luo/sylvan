@@ -45,3 +45,5 @@ pcwait [分钟=180]           # 等笔记本能连上（合盖睡着、断线时
   醒来时（Power-Troubleshooter 1 / Kernel-Power 107、507）触发，15 秒后连查两次，不回答就立即重启。
   脚本和日志：%LOCALAPPDATA%\ClaudeHubWatchdog\（watchdog.ps1、on-resume.ps1、watchdog.log）。
 - 会话里经笔记本的操作失败时，后台跑 `pcwait`，连上后自动接着做。
+- 会话台连接改为笔记本计划任务「ClaudeHub会话台连接」（tunnel.ps1，登录自启、断线自动重连，源文件在 ~/claude-ui/launcher/），
+  不再依赖一个开着的命令窗口。
