@@ -1,0 +1,424 @@
+#!/usr/bin/python3
+# -*- coding: utf-8 -*-
+"""desk — 用户 Windows 电脑的桌面整理助手（经 tsx sh mac 操作，所有移动都记日志、可撤销）
+
+  desk ls [类别]              看桌面：顶层有什么、各类别文件夹里有什么（带大小）
+  desk plan                   预演：按规则，桌面上散落的东西各自会放进哪个类别（不动文件）
+  desk tidy                   执行整理（= plan 之后真正移动）；没匹配上规则的留在原地并列出来
+  desk mv 名字... -c 类别[/子目录] [--as 新名]   手动把桌面上的某几项（也可写 '09 杂物/简历.pdf' 这种相对路径）放进某类别
+  desk put 文件... [-c 类别[/子目录]] [-f]   把 mini 上的产物直接送进用户桌面对应类别（代替 tsx push 到桌面）
+  desk big [--min 300]        类别文件夹里超过 N MB 的子文件夹 → 本体移到 D:\\桌面大文件\\类别\\，原处留快捷方式
+  desk undo [日志名]          撤销最近一次（或指定一次）tidy / mv / big
+  desk log                    列出历次操作日志
+  desk cats                   列出类别、对应的文件夹、规则
+
+  规则：~/tools/desk/rules.tsv（通用，进仓库）+ ~/.config/desk/rules.local.tsv（私人，优先，不进仓库）
+  类别：~/tools/desk/categories.txt
+  环境变量 DESK_PC（默认 mac）、DESK_BIG（默认 D:\\桌面大文件）
+"""
+import sys, os, json, base64, subprocess, fnmatch, time, argparse
+
+TOOL = os.path.dirname(os.path.realpath(__file__))
+HOME = os.path.expanduser('~')
+LOCAL_RULES = os.path.join(HOME, '.config', 'desk', 'rules.local.tsv')
+LOGDIR = os.path.join(HOME, 'data', 'tools', 'desk', 'logs')
+if not os.path.isdir(os.path.join(HOME, 'data')):
+    LOGDIR = os.path.join(HOME, '.local', 'state', 'desk', 'logs')
+PC = os.environ.get('DESK_PC', 'mac')
+BIG = os.environ.get('DESK_BIG', r'D:\桌面大文件')
+KEEP = '@留在桌面'
+
+
+# ───────────── 规则和类别 ─────────────
+def categories():
+    cats = []
+    for ln in open(os.path.join(TOOL, 'categories.txt'), encoding='utf-8'):
+        ln = ln.strip()
+        if ln and not ln.startswith('#'):
+            cats.append(ln)
+    return cats
+
+
+def short(cat):                     # '01 学习笔记' -> '学习笔记'
+    return cat.split(' ', 1)[1] if ' ' in cat and cat.split(' ', 1)[0].isdigit() else cat
+
+
+def find_cat(s):
+    s = s.strip().strip('/\\')
+    if s == KEEP or s == '留在桌面':
+        return KEEP
+    cats = categories()
+    for c in cats:
+        if s in (c, short(c)):
+            return c
+    hits = [c for c in cats if s in c]
+    if len(hits) == 1:
+        return hits[0]
+    sys.exit(f'没有这个类别：{s}（可用：{"、".join(short(c) for c in cats)}）')
+
+
+def resolve(spec):
+    """'学习笔记/CFA' -> '01 学习笔记\\CFA'（类别可带子目录）"""
+    parts = spec.replace('\\', '/').split('/', 1)
+    c = find_cat(parts[0])
+    return c if len(parts) == 1 or c == KEEP else c + '\\' + parts[1].strip('/').replace('/', '\\')
+
+
+def rules():
+    out = []
+    for path in (LOCAL_RULES, os.path.join(TOOL, 'rules.tsv')):
+        if not os.path.exists(path):
+            continue
+        for ln in open(path, encoding='utf-8'):
+            ln = ln.rstrip('\n')
+            if not ln.strip() or ln.lstrip().startswith('#') or '\t' not in ln:
+                continue
+            cat, pat = ln.split('\t', 1)
+            out.append((cat.strip(), pat.strip()))
+    return out
+
+
+def classify(name, isdir, rs=None):
+    """返回 (类别全名 或 KEEP 或 None, 命中的规则)"""
+    low = name.lower()
+    for cat, pat in rs if rs is not None else rules():
+        kind = None
+        if pat[:2] in ('d:', 'f:'):
+            kind, pat = pat[0], pat[2:]
+        if kind == 'd' and not isdir or kind == 'f' and isdir:
+            continue
+        if fnmatch.fnmatchcase(low, pat.lower()):
+            return (KEEP if cat in (KEEP, '留在桌面') else resolve(cat)), f'{cat}\t{pat}'
+    return None, None
+
+
+# ───────────── 在用户电脑上跑 PowerShell ─────────────
+def ps(script, check=True):
+    r = subprocess.run(['tsx', 'sh', PC], input=script.encode('utf-8'),
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    out = r.stdout.decode('utf-8', 'replace')
+    if check and r.returncode != 0:
+        sys.stderr.write(r.stderr.decode('utf-8', 'replace'))
+        sys.exit(f'在用户电脑上执行失败（exit {r.returncode}）。笔记本连不上时可以先 pcwait。')
+    return out
+
+
+def ps_json(script, data=None):
+    pre = "$ErrorActionPreference='Continue'\n"
+    if data is not None:
+        b = base64.b64encode(json.dumps(data, ensure_ascii=False).encode('utf-8')).decode()
+        pre += f"$IN = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{b}')) | ConvertFrom-Json\n"
+    post = ("\n$j = ConvertTo-Json -Compress -Depth 8 $OUT\n"
+            "'@@B64@@' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($j))\n")
+    out = ps(pre + script + post)
+    for ln in out.splitlines():
+        if ln.startswith('@@B64@@'):
+            return json.loads(base64.b64decode(ln[7:]).decode('utf-8'))
+    sys.stderr.write(out)
+    sys.exit('没拿到用户电脑的返回结果')
+
+
+PS_LIST = r'''
+$d = [Environment]::GetFolderPath('Desktop')
+function Sz($p) { $s = (Get-ChildItem -LiteralPath $p -Recurse -File -Force -EA SilentlyContinue | Measure-Object Length -Sum).Sum; if ($s) { [int64]$s } else { 0 } }
+function Info($it, $deep) {
+  $o = [ordered]@{ name = $it.Name; dir = [bool]$it.PSIsContainer; hidden = [bool]($it.Attributes -band 2);
+                   mtime = $it.LastWriteTime.ToString('yyyy-MM-dd'); size = 0; target = $null; children = @() }
+  if ($it.PSIsContainer) { $o.size = Sz $it.FullName } else { $o.size = [int64]$it.Length }
+  if ($it.Extension -eq '.lnk') { try { $o.target = (New-Object -ComObject WScript.Shell).CreateShortcut($it.FullName).TargetPath } catch {} }
+  if ($deep -and $it.PSIsContainer) { $o.children = @(Get-ChildItem -LiteralPath $it.FullName -Force -EA SilentlyContinue | % { Info $_ $false }) }
+  $o
+}
+$cats = @($IN.cats)
+$OUT = [ordered]@{ desktop = $d; items = @(Get-ChildItem -LiteralPath $d -Force | % { Info $_ ($cats -contains $_.Name) }) }
+'''
+
+# ops: {op:'mv', src, dst} 或 {op:'big', src, dst, lnk} 或 {op:'unbig', src, dst, lnk}
+PS_APPLY = r'''
+function Free($p) {
+  if (-not (Test-Path -LiteralPath $p)) { return $p }
+  $dir = Split-Path $p; $leaf = Split-Path $p -Leaf
+  $ext = [IO.Path]::GetExtension($leaf); $base = $leaf.Substring(0, $leaf.Length - $ext.Length)
+  if ((Test-Path -LiteralPath $p -PathType Container)) { $base = $leaf; $ext = '' }
+  for ($i = 2; ; $i++) { $q = Join-Path $dir ("$base ($i)$ext"); if (-not (Test-Path -LiteralPath $q)) { return $q } }
+}
+function MoveAny($src, $dst) {
+  $par = Split-Path $dst
+  if (-not (Test-Path -LiteralPath $par)) { New-Item -ItemType Directory -Path $par -Force | Out-Null }
+  if ([IO.Path]::GetPathRoot($src) -eq [IO.Path]::GetPathRoot($dst) -or -not (Test-Path -LiteralPath $src -PathType Container)) {
+    Move-Item -LiteralPath $src -Destination $dst -ErrorAction Stop
+  } else {
+    robocopy $src $dst /E /MOVE /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS | Out-Null
+    if ($LASTEXITCODE -ge 8 -or (Test-Path -LiteralPath $src)) { throw "robocopy 没搬完（$LASTEXITCODE）" }
+  }
+}
+$OUT = @()
+foreach ($o in @($IN)) {
+  $r = [ordered]@{ op = $o.op; src = $o.src; dst = $o.dst; lnk = $o.lnk; ok = $false; err = $null }
+  try {
+    if (-not (Test-Path -LiteralPath $o.src)) { throw '找不到源' }
+    if ($o.op -eq 'unbig') {
+      if ($o.lnk -and (Test-Path -LiteralPath $o.lnk)) { Remove-Item -LiteralPath $o.lnk -Force }
+    }
+    $dst = $o.dst
+    if ($o.op -ne 'unbig') { $dst = Free $dst }
+    elseif (Test-Path -LiteralPath $dst) { throw "原位置已有同名的：$dst" }
+    MoveAny $o.src $dst
+    $r.dst = $dst
+    if ($o.op -eq 'big') {
+      $sh = (New-Object -ComObject WScript.Shell).CreateShortcut($o.lnk)
+      $sh.TargetPath = $dst; $sh.Description = '本体在 ' + $dst; $sh.Save()
+    }
+    $r.ok = $true
+  } catch { $r.err = $_.Exception.Message }
+  $OUT += $r
+}
+'''
+
+
+def listing():
+    return ps_json(PS_LIST, {'cats': categories()})
+
+
+def human(n):
+    n = n or 0
+    for u in ('B', 'KB', 'MB', 'GB'):
+        if n < 1024 or u == 'GB':
+            return f'{n:.0f} {u}' if u in ('B', 'KB') else f'{n:.1f} {u}'
+        n /= 1024
+
+
+def winjoin(*p):
+    return '\\'.join(x.rstrip('\\') for x in p)
+
+
+# ───────────── 日志 / 撤销 ─────────────
+def save_log(kind, results):
+    done = [r for r in results if r.get('ok')]
+    if not done:
+        return None
+    os.makedirs(LOGDIR, exist_ok=True)
+    name = time.strftime('%Y%m%d-%H%M%S') + '-' + kind
+    with open(os.path.join(LOGDIR, name + '.json'), 'w', encoding='utf-8') as f:
+        json.dump(done, f, ensure_ascii=False, indent=1)
+    return name
+
+
+def apply(ops, kind):
+    if not ops:
+        print('没有要移动的。')
+        return
+    res = ps_json(PS_APPLY, ops)
+    if isinstance(res, dict):
+        res = [res]
+    ok = [r for r in res if r['ok']]
+    bad = [r for r in res if not r['ok']]
+    for r in ok:
+        extra = f'（原处留快捷方式）' if r['op'] == 'big' else ''
+        print(f'  ✓ {r["src"]}\n      → {r["dst"]}{extra}')
+    for r in bad:
+        print(f'  ✗ {r["src"]}：{r["err"]}（文件开着的话关掉再试）')
+    name = save_log(kind, res)
+    print(f'\n完成 {len(ok)} 项，失败 {len(bad)} 项。' + (f'撤销：desk undo {name}' if name else ''))
+
+
+def cmd_undo(a):
+    logs = sorted(f[:-5] for f in os.listdir(LOGDIR) if f.endswith('.json') and not f.endswith('.undone.json')) if os.path.isdir(LOGDIR) else []
+    if not logs:
+        sys.exit('没有可撤销的操作。')
+    name = a.name or logs[-1]
+    path = os.path.join(LOGDIR, name + '.json')
+    done = json.load(open(path, encoding='utf-8'))
+    ops = []
+    for r in reversed(done):
+        if r['op'] == 'big':
+            ops.append({'op': 'unbig', 'src': r['dst'], 'dst': r['src'], 'lnk': r['lnk']})
+        else:
+            ops.append({'op': 'unbig', 'src': r['dst'], 'dst': r['src'], 'lnk': None})
+    print(f'撤销 {name}（{len(ops)} 项）：')
+    res = ps_json(PS_APPLY, ops)
+    res = [res] if isinstance(res, dict) else res
+    for r in res:
+        print(('  ✓ ' if r['ok'] else '  ✗ ') + f'{r["src"]} → {r["dst"]}' + ('' if r['ok'] else f'：{r["err"]}'))
+    if all(r['ok'] for r in res):
+        os.rename(path, path[:-5] + '.undone.json')
+
+
+def cmd_log(a):
+    if not os.path.isdir(LOGDIR):
+        return print('还没有日志。')
+    for f in sorted(os.listdir(LOGDIR)):
+        n = len(json.load(open(os.path.join(LOGDIR, f), encoding='utf-8')))
+        print(f'{f[:-5]:40} {n} 项' + ('（已撤销）' if f.endswith('.undone.json') else ''))
+
+
+# ───────────── 命令 ─────────────
+def cmd_ls(a):
+    L = listing()
+    cats = categories()
+    items = L['items']
+    print(f'桌面：{L["desktop"]}\n')
+    want = find_cat(a.cat) if a.cat else None
+    for c in cats:
+        it = next((i for i in items if i['name'] == c), None)
+        if want and c != want:
+            continue
+        if not it:
+            if want:
+                print(f'（{c} 还不存在）')
+            continue
+        print(f'📁 {c}  {human(it["size"])}，{len(it["children"])} 项')
+        for ch in sorted(it['children'], key=lambda x: (not x['dir'], x['name'])):
+            tgt = f'  → {ch["target"]}' if ch.get('target') else ''
+            print(f'     {"📁" if ch["dir"] else "  "} {ch["name"]}  {human(ch["size"])}{tgt}')
+    if want:
+        return
+    rest = [i for i in items if i['name'] not in cats and not i['hidden']]
+    keep = [i for i in rest if classify(i['name'], i['dir'])[0] == KEEP]
+    loose = [i for i in rest if i not in keep]
+    print(f'\n留在桌面的快捷方式等：{len(keep)} 项（{"、".join(i["name"] for i in keep[:8])}{"…" if len(keep) > 8 else ""}）')
+    if loose:
+        print(f'\n散落在桌面、还没归类的：{len(loose)} 项')
+        for i in loose:
+            print(f'   {"📁" if i["dir"] else "  "} {i["name"]}  {human(i["size"])}  {i["mtime"]}')
+    else:
+        print('\n桌面上没有散落的文件 ✓')
+
+
+def make_plan(L):
+    cats = categories()
+    rs = rules()
+    d = L['desktop']
+    plan, unknown = [], []
+    for i in L['items']:
+        if i['hidden'] or i['name'] in cats:
+            continue
+        c, rule = classify(i['name'], i['dir'], rs)
+        if c == KEEP:
+            continue
+        if c is None:
+            unknown.append(i)
+            continue
+        if '\\' not in c and i['dir'] and short(c) == i['name'] and not any(x['name'] == c for x in L['items']):
+            dst = winjoin(d, c)              # 同名文件夹（如「杂物」）直接改名成类别文件夹
+        else:
+            dst = winjoin(d, c, i['name'])
+        plan.append({'op': 'mv', 'src': winjoin(d, i['name']), 'dst': dst, '_cat': c, '_name': i['name'], '_rule': rule})
+    plan.sort(key=lambda p: (p['dst'] != winjoin(d, p['_cat']), p['_cat']))   # 改名的先做
+    return plan, unknown
+
+
+def show_plan(plan, unknown):
+    cur = None
+    for p in sorted(plan, key=lambda p: p['_cat']):
+        if p['_cat'] != cur:
+            cur = p['_cat']
+            print(f'📁 {cur}')
+        how = '（整个文件夹改名为类别文件夹）' if p['dst'].endswith('\\' + p['_cat']) else ''
+        print(f'     ← {p["_name"]}{how}')
+    if unknown:
+        print(f'\n没有规则匹配、会留在原地的 {len(unknown)} 项（用 desk mv 名字 -c 类别 手动放，或在 ~/.config/desk/rules.local.tsv 加规则）：')
+        for i in unknown:
+            print(f'   {"📁" if i["dir"] else "  "} {i["name"]}  {human(i["size"])}  {i["mtime"]}')
+
+
+def cmd_plan(a):
+    plan, unknown = make_plan(listing())
+    if not plan and not unknown:
+        return print('桌面已经整齐，没有要整理的。')
+    show_plan(plan, unknown)
+
+
+def cmd_tidy(a):
+    plan, unknown = make_plan(listing())
+    show_plan(plan, unknown)
+    print()
+    apply([{k: v for k, v in p.items() if not k.startswith('_')} for p in plan], 'tidy')
+
+
+def cmd_mv(a):
+    c = resolve(a.cat)
+    if c == KEEP:
+        sys.exit('mv 只能放进类别文件夹')
+    d = ps("[Environment]::GetFolderPath('Desktop')").strip().splitlines()[-1]
+    if a.as_ and len(a.names) != 1:
+        sys.exit('--as 只能配一个名字')
+    ops = [{'op': 'mv', 'src': winjoin(d, n.replace('/', '\\')),
+            'dst': winjoin(d, c, a.as_ or n.replace('/', '\\').rstrip('\\').split('\\')[-1])} for n in a.names]
+    apply(ops, 'mv')
+
+
+def cmd_put(a):
+    rs = rules()
+    d = ps("[Environment]::GetFolderPath('Desktop')").strip().splitlines()[-1]
+    for f in a.files:
+        if not os.path.exists(f):
+            sys.exit(f'找不到 {f}')
+        name = os.path.basename(f.rstrip('/'))
+        if a.cat:
+            c = resolve(a.cat)
+        else:
+            c, _ = classify(name, os.path.isdir(f), rs)
+            if c in (None, KEEP):
+                sys.exit(f'{name}：规则判断不了放哪类，请加 -c 类别（可用：{"、".join(short(x) for x in categories())}）')
+        dest = winjoin(d, c)
+        cmd = ['tsx', 'push', PC, f, '-d', dest] + (['-f'] if a.force else [])
+        print(f'→ {dest}')
+        r = subprocess.run(cmd)
+        if r.returncode:
+            sys.exit(r.returncode)
+
+
+def cmd_big(a):
+    L = listing()
+    lim = a.min * 1024 * 1024
+    ops = []
+    for c in categories():
+        it = next((i for i in L['items'] if i['name'] == c), None)
+        if not it:
+            continue
+        for ch in it['children']:
+            if ch['dir'] and ch['size'] >= lim:
+                src = winjoin(L['desktop'], c, ch['name'])
+                ops.append({'op': 'big', 'src': src, 'dst': winjoin(BIG, c, ch['name']), 'lnk': src + '.lnk'})
+                print(f'  {c}\\{ch["name"]}  {human(ch["size"])}')
+    if not ops:
+        return print(f'类别文件夹里没有超过 {a.min} MB 的子文件夹。')
+    if not a.yes:
+        print(f'\n以上会移到 {BIG}\\类别\\ 并在原处留快捷方式。确认执行加 -y。')
+        return
+    apply(ops, 'big')
+
+
+def cmd_cats(a):
+    for c in categories():
+        print(c)
+    print(f'\n规则（先私人 {LOCAL_RULES}，再通用 {TOOL}/rules.tsv，第一条命中为准）：')
+    for c, p in rules():
+        print(f'  {c:10} {p}')
+
+
+def main():
+    ap = argparse.ArgumentParser(prog='desk', description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sp = ap.add_subparsers(dest='cmd')
+    p = sp.add_parser('ls'); p.add_argument('cat', nargs='?'); p.set_defaults(fn=cmd_ls)
+    sp.add_parser('plan').set_defaults(fn=cmd_plan)
+    sp.add_parser('tidy').set_defaults(fn=cmd_tidy)
+    p = sp.add_parser('mv'); p.add_argument('names', nargs='+'); p.add_argument('-c', dest='cat', required=True)
+    p.add_argument('--as', dest='as_'); p.set_defaults(fn=cmd_mv)
+    p = sp.add_parser('put'); p.add_argument('files', nargs='+'); p.add_argument('-c', dest='cat')
+    p.add_argument('-f', dest='force', action='store_true'); p.set_defaults(fn=cmd_put)
+    p = sp.add_parser('big'); p.add_argument('--min', type=int, default=300); p.add_argument('-y', dest='yes', action='store_true')
+    p.set_defaults(fn=cmd_big)
+    p = sp.add_parser('undo'); p.add_argument('name', nargs='?'); p.set_defaults(fn=cmd_undo)
+    sp.add_parser('log').set_defaults(fn=cmd_log)
+    sp.add_parser('cats').set_defaults(fn=cmd_cats)
+    a = ap.parse_args()
+    if not a.cmd:
+        ap.print_help()
+        return
+    a.fn(a)
+
+
+if __name__ == '__main__':
+    main()

@@ -1,6 +1,6 @@
 # Sylvan 的 Claude Skills
 
-我和 Claude Code 一起做出来、日常在用的 skill 和小工具，共 6 个。
+我和 Claude Code 一起做出来、日常在用的 skill 和小工具，共 7 个。
 每个目录 `skills/<名字>/` 里：`SKILL.md` 是给 Claude 看的技能说明（什么时候用、怎么用），其余是这个 skill 用到的脚本、模板和说明文档。
 
 > 本仓库由 `skills-sync` 从我本机的工具箱自动同步（最近一次：2026-11-26），请不要直接在 GitHub 上改——改了会被下次同步覆盖。
@@ -10,6 +10,7 @@
 
 | 名字 | 类型 | 做什么 / 什么时候用 |
 |---|---|---|
+| [desk](skills/desk/) | skill + 工具 | 用户 Windows 电脑的桌面整理助手（命令 desk）。用户说“整理桌面”“桌面太乱”“把桌面文件归类”“大文件夹挪到 D 盘留快捷方式”“桌面上的 XX 放哪了”“撤销刚才的整理”时用；以及任何会话要把做好的笔记、报告、PDF、作业、程序送到用户电脑上时——用 desk put 放进桌面对应的类别文件夹，不要直接 tsx push 到桌面根目录。 |
 | [latex-pdf](skills/latex-pdf/) | skill + 工具 | 生成排版精美的 PDF（中文为主）：把 Markdown / Word / HTML / LaTeX 先转 LaTeX、套用户认可的模板（深蓝封面横幅、彩色定义/结论/原话/易错框、两栏选择题），再用 XeLaTeX 编译。用户说“做成 PDF”“生成 PDF”“导出好看的 PDF”“排版成讲义/笔记/复习资料/报告”“用 LaTeX 排一下”“套那个模板”时用。 |
 | [pc-remote](skills/pc-remote/) | skill + 工具 | 远程操作用户自己的 Windows 电脑（也管笔记本合盖睡着、连不上时怎么等它回来再接着做）：截屏看屏幕、点鼠标/敲键盘（pcctl），控制笔记本上已登录教学网/高顿等网站的专用 Chrome、读网页/执行 JS/网页截图（pcweb），在 GPU 台式机上跑 PowerShell（gpups）。用户说“看看我屏幕”“帮我点一下”“在我电脑浏览器里打开/读一下 XX 网页”“在台式机上跑”时用。 |
 | [pku-homework](skills/pku-homework/) | skill + 工具 | 北大教学网（course.pku.edu.cn / Blackboard）作业：查有哪些作业没交、什么时候截止，下载作业要求和附件，帮用户做作业，并在用户同意后提交到教学网、核对是否交上。用户说“教学网”“作业”“有什么作业没交”“帮我做/写/完成 XX 课的作业”“把作业交了/提交作业”“作业截止”时用。 |
