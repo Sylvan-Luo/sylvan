@@ -1,0 +1,29 @@
+#!/bin/zsh
+# pcwait — 等用户的笔记本能连上（笔记本睡着、合盖、断网时用）。连上就返回 0；等到上限还连不上返回 1。
+#   pcwait [最长等几分钟，默认 180]
+# 用法：经笔记本的操作（tsx / pcweb / pcctl / 微信等）因为连不上失败时，把 pcwait 放到后台运行
+#      （Bash 的 run_in_background），它结束时会通知你，然后接着做刚才没做完的事，不用等用户来叫。
+LIMIT_MIN=${1:-180}
+SHIM=$HOME/claude-ui/shim/tsx
+T0=$(date +%s); said=0
+check() {
+  # 先用本会话自己的窗口（命令窗口会话有 CLAUDEHUB_WINDOW），不行再借当前连着的任意通道（会话台的或别的命令窗口）
+  timeout 45 tsx sh mac '"ok"' 2>/dev/null | grep -q '^ok' && return 0
+  [ -x "$SHIM" ] && env -u CLAUDEHUB_WINDOW timeout 45 "$SHIM" sh mac '"ok"' 2>/dev/null | grep -q '^ok' && return 0
+  return 1
+}
+while :; do
+  if check; then
+    [ $said = 1 ] && echo "$(date '+%H:%M') 笔记本连上了（等了 $(( ($(date +%s) - T0) / 60 )) 分钟），可以接着做了。" || echo "笔记本连着，可以直接用。"
+    exit 0
+  fi
+  if [ $said = 0 ]; then
+    echo "$(date '+%H:%M') 笔记本暂时连不上（多半是合盖睡着了，或者「Claude 会话台」窗口关了），开始等，最多 $LIMIT_MIN 分钟。"
+    said=1
+  fi
+  if [ $(( $(date +%s) - T0 )) -ge $(( LIMIT_MIN * 60 )) ]; then
+    echo "$(date '+%H:%M') 等了 $LIMIT_MIN 分钟还是连不上。请告诉用户：打开笔记本，确认桌面上的「Claude 会话台」窗口开着。"
+    exit 1
+  fi
+  sleep 30
+done

@@ -22,6 +22,8 @@ pcweb shot                  # 网页截图（窗口不用在前台）
 PCWEB_TAB=n pcweb …         # 指定第 n 个标签
 
 gpups '命令'                # 在 gpu 台式机上执行 PowerShell（也可从标准输入读多行脚本）
+
+pcwait [分钟=180]           # 等笔记本能连上（合盖睡着、断线时），连上返回 0；放后台运行，结束时接着做
 ```
 
 环境变量：`PCCTL_HOST`（默认 `mac`，即当前窗口那台电脑）、`PCCTL_DIR`（截图存放，默认 `~/.cache/pcctl`）。
@@ -35,3 +37,11 @@ gpups '命令'                # 在 gpu 台式机上执行 PowerShell（也可�
 ## 注意
 - 操作用户正在用的窗口之前先截图确认；点「发送 / 付款 / 删除 / 提交」之类按钮前先问用户。
 - 不从 cookie 取登录凭证自己调网站接口，一律在页面里操作。
+
+## 笔记本睡眠与断线（2026-11-26）
+- 笔记本电源设置：插电时合盖“不采取任何操作”（只关屏幕，继续运行）；电池时合盖仍睡眠。插电时本来就不会自动睡眠。
+- 笔记本上的计划任务「ClaudeHub助手看门狗」每分钟按正式协议 PING 桌面助手（127.0.0.1:47219）：没在监听就启动
+  ClaudeHub-Agent；连续 4 次不回答就核对确是 claudehub-agent.ps1 后结束并重启。「ClaudeHub助手看门狗-唤醒」在系统从睡眠
+  醒来时（Power-Troubleshooter 1 / Kernel-Power 107、507）触发，15 秒后连查两次，不回答就立即重启。
+  脚本和日志：%LOCALAPPDATA%\ClaudeHubWatchdog\（watchdog.ps1、on-resume.ps1、watchdog.log）。
+- 会话里经笔记本的操作失败时，后台跑 `pcwait`，连上后自动接着做。
