@@ -8,6 +8,7 @@
   desk mv 名字... -c 类别[/子目录] [--as 新名]   手动把桌面上的某几项（也可写 '09 杂物/简历.pdf' 这种相对路径）放进某类别
   desk put 文件... [-c 类别[/子目录]] [-f]   把 mini 上的产物直接送进用户桌面对应类别（代替 tsx push 到桌面）
   desk big [--min 300]        类别文件夹里超过 N MB 的子文件夹 → 本体移到 D:\\桌面大文件\\类别\\，原处留快捷方式
+  desk arrange [--sort name]  桌面图标排列规整：按项目类型（文件夹在前、同类在一起）再按名称，自动排列+对齐网格
   desk undo [日志名]          撤销最近一次（或指定一次）tidy / mv / big
   desk log                    列出历次操作日志
   desk cats                   列出类别、对应的文件夹、规则
@@ -390,6 +391,12 @@ def cmd_big(a):
     apply(ops, 'big')
 
 
+def cmd_arrange(a):
+    r = ps_json(open(os.path.join(TOOL, 'arrange.ps1'), encoding='utf-8').read(), {'sort': a.sort})
+    print('桌面图标已' + ('按项目类型（文件夹在前、同类在一起）再按名称排序' if a.sort == 'type' else '按名称排序')
+          + '，并打开了自动排列、对齐到网格。' + f'（{r.get("msg")}）')
+
+
 def cmd_cats(a):
     for c in categories():
         print(c)
@@ -413,6 +420,7 @@ def main():
     p = sp.add_parser('undo'); p.add_argument('name', nargs='?'); p.set_defaults(fn=cmd_undo)
     sp.add_parser('log').set_defaults(fn=cmd_log)
     sp.add_parser('cats').set_defaults(fn=cmd_cats)
+    p = sp.add_parser('arrange'); p.add_argument('--sort', choices=['type', 'name'], default='type'); p.set_defaults(fn=cmd_arrange)
     a = ap.parse_args()
     if not a.cmd:
         ap.print_help()

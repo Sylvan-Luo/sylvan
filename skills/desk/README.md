@@ -20,6 +20,7 @@ desk tidy                           # 真正整理；规则判断不了的留在
 desk mv 名字... -c 类别[/子目录] [--as 新名]   # 手动归类；名字可以是 '09 杂物/简历.pdf' 这种相对桌面的路径
 desk put 文件... [-c 类别[/子目录]] [-f]       # 把 mini 上的产物送进桌面某类别（代替 tsx push -d ~/Desktop）；-f 覆盖同名
 desk big [--min 300] [-y]           # 类别里超过 N MB 的子文件夹 → 本体移到 D:\桌面大文件\类别\，原处留快捷方式
+desk arrange [--sort name]          # 图标排列规整：按项目类型（文件夹在前、同类在一起）再按名称，自动排列+对齐网格
 desk undo [日志名]                   # 撤销最近一次（或指定一次）tidy / mv / big
 desk log                            # 历次操作
 desk cats                           # 类别和规则
@@ -43,4 +44,5 @@ desk cats                           # 类别和规则
 - 移动代码项目后，`.venv` 里的 pip.exe 等启动器写死了旧路径，用 `python -m pip`，或重建虚拟环境；PyCharm 里重新打开新位置。
 - 用户的桌面在 `D:\HuaweiMoveData\Users\<WinUser>\Desktop`（华为电脑管家搬到了 D 盘），本身就不占 C 盘；
   `desk big` 只是让桌面文件夹变轻、大文件集中放。
+- `desk arrange` 用 COM 调桌面的 IFolderView2（arrange.ps1），等于右键 → 排序方式 → 项目类型 + 自动排列图标 + 对齐网格；设置会一直保持。
 - 只移动、改名、建快捷方式，从不删除用户文件。
